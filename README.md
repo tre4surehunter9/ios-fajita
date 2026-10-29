@@ -192,6 +192,7 @@ Not in git: partition backups, live device trees, recovery images, Apple firmwar
 | 0085 | Power the QUSB2 PHY back up when the bootloader left it powered down (fajita after `fastboot boot`) |
 | 0086 | USB DMA in a fixed low-memory window (`sweetusbdma=`, fajita default `0x99800000`) |
 | 0087 | fajita keys: PM8998 power (PON), volume up/down (GPIO6/GPIO5) |
+| 0088 | fajita touch: Synaptics RMI4 on wrapper1 SE4, L28A over RPMh (SDM845 RSC), touch mapping follows the panel height |
 
 ## Key hardware facts
 

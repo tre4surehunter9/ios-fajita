@@ -1,0 +1,556 @@
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 4da50d8..2e5d847 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -1,5 +1,9 @@
+ /*
+  * SWEET PM6150L L11C bring-up; see report.md for DT and source evidence.
++ * fajita (SDM845): PM8998 L28A (touch VDD, 2856..3008 mV). Its live FDT has
++ * apps_rsc mailbox@179e0000 / TCS 0x179e0d00 (size 0x3000), drv-id 2,
++ * tcs-config ACTIVE 2 / SLEEP 3 / WAKE 3 / CONTROL 1 (same geometry as
++ * sweet) and the same cmd-db locator 0xc3f000c.
+  * Sole XNU apps-DRV owner, called from thread context with deep idle disabled.
+  * No sleep/wake programming, SPMI writes, GIC handler, or timeout recovery.
+  */
+@@ -14,8 +18,10 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+-#define RH_RSC_PA       0x18220000u
+-#define RH_TCS_PA       0x18220d00u
++#define RH_RSC_PA_SM7150   0x18220000u
++#define RH_TCS_PA_SM7150   0x18220d00u
++#define RH_RSC_PA_SDM845   0x179e0000u
++#define RH_TCS_PA_SDM845   0x179e0d00u
+ #define RH_TCS_SIZE     0x3000u
+ #define RH_DICT_PA      0x0c3f000cu
+ #define RH_DRV          2u
+@@ -46,7 +52,10 @@ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ #define RH_VRM          4u
+ #define RH_TIMEOUT_US   100000u
+ 
++extern bool sweet_board_is(const char *want);
++
+ static vm_offset_t rh_rsc, rh_tcs, rh_dict, rh_db;
++static uint32_t rh_rsc_pa, rh_tcs_pa;
+ static uint32_t rh_db_size;
+ static unsigned rh_ncpt;
+ static unsigned rh_lock;
+@@ -100,11 +109,16 @@ rh_range(uint32_t off, uint32_t size)
+ static int
+ rh_map(void)
+ {
++	if (!rh_rsc_pa) {
++		bool fajita = sweet_board_is("oneplus,fajita");
++		rh_rsc_pa = fajita ? RH_RSC_PA_SDM845 : RH_RSC_PA_SM7150;
++		rh_tcs_pa = fajita ? RH_TCS_PA_SDM845 : RH_TCS_PA_SM7150;
++	}
+ 	if (!rh_rsc) {
+-		rh_rsc = ml_io_map(RH_RSC_PA, 0x100);
++		rh_rsc = ml_io_map(rh_rsc_pa, 0x100);
+ 	}
+ 	if (!rh_tcs) {
+-		rh_tcs = ml_io_map(RH_TCS_PA, RH_TCS_SIZE);
++		rh_tcs = ml_io_map(rh_tcs_pa, RH_TCS_SIZE);
+ 	}
+ 	if (!rh_dict) {
+ 		rh_dict = ml_io_map(RH_DICT_PA, 8);
+@@ -120,7 +134,7 @@ rh_map(void)
+ 	unsigned count = (config >> (6u * RH_DRV)) & 0x3fu;
+ 	rh_ncpt = (config >> 27) & 0x1fu;
+ 	printf("SWEET RPMH: rsc=%#x tcs=%#x DRV=%u id=%#x solver=%#x config=%#x TCS=%u ncpt=%u\n",
+-	    RH_RSC_PA, RH_TCS_PA, RH_DRV, id, solver, config, count, rh_ncpt);
++	    rh_rsc_pa, rh_tcs_pa, RH_DRV, id, solver, config, count, rh_ncpt);
+ 	/* This client implements the pre-v3 layout only; do not guess v3 offsets. */
+ 	if ((major != 1 && major != 2) || config == 0xffffffffu ||
+ 	    solver == 0xffffffffu || count < RH_NORMAL_N ||
+@@ -234,7 +248,7 @@ rh_send(uint32_t address, unsigned mv)
+ 		for (unsigned c = 0; c < rh_ncpt; ++c) {
+ 			if ((enabled & (1u << c)) &&
+ 			    (rh_read(rh_tcs, b + RH_ADDR + c * RH_CMD_STRIDE) & ~15u) == address) {
+-				printf("SWEET RPMH: conflicting inherited L11C request in TCS%u\n", t);
++				printf("SWEET RPMH: conflicting inherited request for this rail in TCS%u\n", t);
+ 				return EBUSY;
+ 			}
+ 		}
+@@ -320,16 +334,19 @@ rh_send(uint32_t address, unsigned mv)
+ 		return EIO;
+ 	}
+ 	rh_poisoned = false;
+-	printf("SWEET RPMH: L11C ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("SWEET RPMH: ACTIVE vote complete (rail voltage requires hardware verification)\n");
+ 	return 0;
+ }
+ 
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: do not apply PMIC5-LDO policy to arbitrary resources. */
+-	if (!res || strcmp(res, "ldoc11") || mv < 2950 || mv > 3400) {
+-		printf("SWEET RPMH: expected ldoc11 and 2950..3400 mV\n");
++	/* Board-specific helper: one touch rail per board, within its DT limits. */
++	bool fajita = sweet_board_is("oneplus,fajita");
++	const char *want = fajita ? "ldoa28" : "ldoc11";
++	unsigned lo = fajita ? 2856 : 2950, hi = fajita ? 3008 : 3400;
++	if (!res || strcmp(res, want) || mv < lo || mv > hi) {
++		printf("SWEET RPMH: expected %s and %u..%u mV\n", want, lo, hi);
+ 		return EINVAL;
+ 	}
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+diff --git a/bsd/dev/sweet_touch.c b/bsd/dev/sweet_touch.c
+index 03defe6..519c87d 100644
+--- a/bsd/dev/sweet_touch.c
++++ b/bsd/dev/sweet_touch.c
+@@ -4,6 +4,16 @@
+  * Requires ABL-loaded GENI I2C firmware; votes L11C through sweet_rpmh.c.
+  * No firmware/config upload or direct PMIC writes. Only IC data write:
+  * zero to GT9896's event status after reading a report. See touch2/report.md.
++ *
++ * fajita (OnePlus 6T, SDM845): Synaptics RMI4 (S3706B) at 0x20 on QUP wrapper1
++ * SE4 = 0x0a90000, polled. Clocks GCC 0x5200c bits 20/21/26, RCG 0x184d8,
++ * branches 0x1800c/0x18010/0x184d4 (gcc-sdm845.c). Pins (pinctrl-sdm845.c
++ * tiles, TLMM 0x03400000): reset gpio99 NORTH, ATTN gpio125 EAST, VIO switch
++ * gpio88 EAST, SDA/SCL gpio49/50 NORTH (qup12). VDD = PM8998 L28A over RPMh.
++ * RMI4 layout from rmi_driver.c / rmi_f01.c / rmi_f12.c. Only IC writes:
++ * page select, F01 device control and interrupt enable. Boot-arg
++ * sweetts_stage=1 stops after clocks + SE, 2 after power and reset, 3 (default)
++ * runs RMI4; sweetts_xraw/sweetts_yraw override the sensor maxima.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -20,6 +30,7 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern kern_return_t thread_terminate(thread_t);
+ extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ extern void sweet_hid_touch(int finger, int down, int x, int y);
++extern bool sweet_board_is(const char *want);
+ void sweet_touch_init(void);
+ 
+ #define TOUCH_SE_PA      0x00a84000u
+@@ -27,6 +38,14 @@ void sweet_touch_init(void);
+ #define TOUCH_NORTH_PA   0x03900000u /* DT TLMM + NORTH (0x500000) */
+ #define TOUCH_GCC_VOTE   0x5200cu
+ #define TOUCH_RCG       0x18148u    /* wrapper1 LOCAL S1 = global SE7 */
++#define FJ_SE_PA         0x00a90000u /* wrapper1 SE4, vendor "se12" */
++#define FJ_NORTH_PA      0x03900000u /* TLMM 0x03400000 + NORTH 0x500000 */
++#define FJ_EAST_PA       0x03500000u /* TLMM 0x03400000 + EAST 0x100000 */
++#define FJ_RCG           0x184d8u
++#define FJ_TS_ADDR       0x20u
++#define FJ_GPIO_RESET    99u         /* NORTH */
++#define FJ_GPIO_ATTN     125u        /* EAST */
++#define FJ_GPIO_VIO      88u         /* EAST */
+ #define TOUCH_GPIO_CFG(n) ((uint32_t)(n) * 0x1000u)
+ #define TOUCH_GPIO_IO(n)  (TOUCH_GPIO_CFG(n) + 4u)
+ #define TOUCH_MAX        10u
+@@ -72,8 +91,9 @@ void sweet_touch_init(void);
+ #define SE_PACK1        0x000ffefeu
+ 
+ static struct {
+-	vm_offset_t se, gcc, gpio;
+-	bool started, dead, probing;
++	vm_offset_t se, gcc, gpio, gpio_e;	/* gpio_e: fajita TLMM EAST */
++	bool started, dead, probing, fajita;
++	uint8_t f01_ctrl, f01_data, f12_data, f12_irq;
+ 	int kind, irq_hint;
+ 	uint32_t irq_status, irq_last, active;
+ 	unsigned sent, got;
+@@ -119,33 +139,46 @@ touch_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask)
+ }
+ 
+ static void
+-touch_gpio(unsigned pin, unsigned mux, unsigned pull, unsigned drive, bool out, bool high)
++touch_gpio_at(vm_offset_t tile, unsigned pin, unsigned mux, unsigned pull, unsigned drive,
++    bool out, bool high)
+ {
+ 	uint32_t off = TOUCH_GPIO_CFG(pin);
+-	uint32_t cfg = touch_rd(st.gpio, off);
++	uint32_t cfg = touch_rd(tile, off);
+ 	if (out) {
+ 		/* Set the desired latch before enabling output (reset is active low). */
+-		touch_wr(st.gpio, TOUCH_GPIO_IO(pin),
+-		    (touch_rd(st.gpio, TOUCH_GPIO_IO(pin)) & ~2u) | (high ? 2u : 0u));
++		touch_wr(tile, TOUCH_GPIO_IO(pin),
++		    (touch_rd(tile, TOUCH_GPIO_IO(pin)) & ~2u) | (high ? 2u : 0u));
+ 	}
+ 	cfg &= ~0x3ffu;
+ 	cfg |= (mux << 2) | pull | (drive << 6) | (out ? 0x200u : 0u);
+-	touch_wr(st.gpio, off, cfg);
++	touch_wr(tile, off, cfg);
++}
++
++static void
++touch_gpio(unsigned pin, unsigned mux, unsigned pull, unsigned drive, bool out, bool high)
++{
++	touch_gpio_at(st.gpio, pin, mux, pull, drive, out, high);
+ }
+ 
+ static bool
+ touch_clocks(void)
+ {
+-	/* Vote on only wrapper1 and SE7, preserving other clock users. */
+-	uint32_t mask = (0x0fu << 18) | (1u << 23);
++	/*
++	 * Vote on only the wrapper and our SE, preserving other clock users.
++	 * sweet: wrapper1 + SE7 (local S1). fajita: wrapper1 M/S AHB (bits 20/21)
++	 * + S4 (bit 26).
++	 */
++	uint32_t mask = st.fajita ? (1u << 20) | (1u << 21) | (1u << 26) :
++	    (0x0fu << 18) | (1u << 23);
++	uint32_t rcg = st.fajita ? FJ_RCG : TOUCH_RCG;
+ 	touch_wr(st.gcc, TOUCH_GCC_VOTE, touch_rd(st.gcc, TOUCH_GCC_VOTE) | mask);
+-	uint32_t dfs = touch_rd(st.gcc, TOUCH_RCG + 0x14u);
+-	uint32_t cfg = touch_rd(st.gcc, TOUCH_RCG + 4u);
++	uint32_t dfs = touch_rd(st.gcc, rcg + 0x14u);
++	uint32_t cfg = touch_rd(st.gcc, rcg + 4u);
+ 	printf("SWEET TOUCH: gcc vote=%#x rcg=%#x cfg=%#x dfs=%#x\n",
+-	    touch_rd(st.gcc, TOUCH_GCC_VOTE), touch_rd(st.gcc, TOUCH_RCG), cfg, dfs);
++	    touch_rd(st.gcc, TOUCH_GCC_VOTE), touch_rd(st.gcc, rcg), cfg, dfs);
+ 	if (dfs & 1u) {
+ 		/* SE CLK_SEL=0 selects DFS performance level 0. Do not alter tables. */
+-		cfg = touch_rd(st.gcc, TOUCH_RCG + 0x1cu);
++		cfg = touch_rd(st.gcc, rcg + 0x1cu);
+ 		if ((cfg & 0x371fu) != 1u) {
+ 			printf("SWEET TOUCH: DFS level0=%#x is not XO/1; need clock integration\n", cfg);
+ 			return false;
+@@ -153,15 +186,18 @@ touch_clocks(void)
+ 	} else {
+ 		/* XO parent 0, HID divider 1 => 19.2 MHz. No PLL or voltage change. */
+ 		cfg = (cfg & ~(0x371fu | (1u << 20))) | 1u;
+-		touch_wr(st.gcc, TOUCH_RCG + 4u, cfg);
+-		touch_wr(st.gcc, TOUCH_RCG, touch_rd(st.gcc, TOUCH_RCG) | 1u);
+-		if (!touch_wait_clear(st.gcc, TOUCH_RCG, 1u)) {
++		touch_wr(st.gcc, rcg + 4u, cfg);
++		touch_wr(st.gcc, rcg, touch_rd(st.gcc, rcg) | 1u);
++		if (!touch_wait_clear(st.gcc, rcg, 1u)) {
+ 			printf("SWEET TOUCH: RCG update timeout\n");
+ 			return false;
+ 		}
+ 	}
+-	const uint32_t branches[] = {0x18004, 0x18008, 0x1800c, 0x18010, 0x18144};
+-	for (unsigned i = 0; i < sizeof(branches) / sizeof(branches[0]); ++i) {
++	static const uint32_t sweet_branches[] = {0x18004, 0x18008, 0x1800c, 0x18010, 0x18144};
++	static const uint32_t fajita_branches[] = {0x1800c, 0x18010, 0x184d4};
++	const uint32_t *branches = st.fajita ? fajita_branches : sweet_branches;
++	unsigned nbranches = st.fajita ? 3 : 5;
++	for (unsigned i = 0; i < nbranches; ++i) {
+ 		if (!touch_wait_clear(st.gcc, branches[i], 1u << 31)) {
+ 			printf("SWEET TOUCH: GCC branch %#x halted (%#x)\n", branches[i],
+ 			    touch_rd(st.gcc, branches[i]));
+@@ -545,6 +581,206 @@ touch_se_init(void)
+ 	return true;
+ }
+ 
++/* ---- fajita: Synaptics RMI4 (S3706B) on wrapper1 SE4, page 0, polled ---- */
++
++static int
++rmi_read(uint8_t reg, uint8_t *buf, unsigned len)
++{
++	return touch_read(FJ_TS_ADDR, reg, false, buf, len);
++}
++
++static int
++rmi_write(uint8_t reg, uint8_t val)
++{
++	const uint8_t b[2] = {reg, val};
++	return touch_msg(FJ_TS_ADDR, b, 2, NULL, 0, false);
++}
++
++/* Device control: configured + no-sleep, normal mode; enable all IRQ sources. */
++static int
++rmi_configure(void)
++{
++	uint8_t clr[3];
++	int err = rmi_write(0xff, 0);	/* page 0 */
++	if (!err) {
++		err = rmi_write(st.f01_ctrl, 0x84);
++	}
++	if (!err) {
++		err = rmi_write(st.f01_ctrl + 1, 0x7f);
++	}
++	if (!err) {
++		err = rmi_read(st.f01_data, clr, sizeof(clr));	/* read clears stale IRQs */
++	}
++	return err;
++}
++
++/* PDT scan downward from 0xE9 in 6-byte entries until function 0. */
++static bool
++rmi_setup(void)
++{
++	unsigned irq_base = 0;
++	bool f01 = false, f12 = false;
++	st.probing = true;
++	int err = rmi_write(0xff, 0);
++	st.probing = false;
++	if (err) {
++		printf("SWEET TS: page select err=%d irq=%#x; no RMI4 device at %#x\n",
++		    err, st.irq_status, FJ_TS_ADDR);
++		return false;
++	}
++	for (unsigned a = 0xe9; a >= 0x0a; a -= 6) {
++		uint8_t e[6];
++		err = rmi_read((uint8_t)a, e, sizeof(e));
++		if (err) {
++			printf("SWEET TS: PDT read %#x err=%d\n", a, err);
++			return false;
++		}
++		unsigned nsrc = e[4] & 7u;
++		printf("SWEET TS: PDT %#x fn=%#x query=%#x cmd=%#x ctrl=%#x data=%#x irqs=%u ver=%u\n",
++		    a, e[5], e[0], e[1], e[2], e[3], nsrc, e[4] >> 5);
++		if (e[5] == 0) {
++			break;
++		}
++		if (e[5] == 0x01) {
++			st.f01_ctrl = e[2];
++			st.f01_data = e[3];
++			f01 = true;
++		} else if (e[5] == 0x12) {
++			st.f12_data = e[3];
++			st.f12_irq = (uint8_t)(((1u << nsrc) - 1u) << irq_base);
++			f12 = true;
++		}
++		irq_base += nsrc;
++	}
++	if (!f01 || !f12 || !st.f12_irq || irq_base > 8) {
++		printf("SWEET TS: need F01 and F12 within the first IRQ byte (f01=%d f12=%d irqs=%u)\n",
++		    f01, f12, irq_base);
++		return false;
++	}
++	err = rmi_configure();
++	printf("SWEET TS: F01 ctrl=%#x data=%#x, F12 data=%#x irq-mask=%#x, configure err=%d\n",
++	    st.f01_ctrl, st.f01_data, st.f12_data, st.f12_irq, err);
++	return err == 0;
++}
++
++/* F12 data1: 10 objects x 8 bytes (type, x lo/hi, y lo/hi, z, wx, wy). */
++static int
++rmi_report(unsigned xraw, unsigned yraw, unsigned *dumps)
++{
++	uint8_t f01[2], b[88];
++	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
++	uint32_t mask = 0;
++
++	int err = rmi_read(st.f01_data, f01, sizeof(f01));
++	if (err) {
++		return err;
++	}
++	if (f01[0] & 0x80u) {
++		/* Unconfigured: the IC reset itself. Release fingers, reconfigure. */
++		printf("SWEET TS: device reset (status %#x); reconfiguring\n", f01[0]);
++		touch_report(0, st.x, st.y);
++		return rmi_configure();
++	}
++	if (!(f01[1] & st.f12_irq)) {
++		return 0;
++	}
++	err = rmi_read(st.f12_data, b, sizeof(b));
++	if (err) {
++		return err;
++	}
++	if (*dumps < 4) {
++		++*dumps;
++		printf("SWEET TS: F12 raw %02x %02x %02x %02x %02x %02x %02x %02x | %02x %02x %02x %02x %02x %02x %02x %02x\n",
++		    b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
++		    b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
++	}
++	for (unsigned i = 0; i < TOUCH_MAX; ++i) {
++		const uint8_t *o = b + 8u * i;
++		if (o[0] != 1u && o[0] != 2u) {	/* finger or stylus */
++			continue;
++		}
++		unsigned xr = ((o[2] & 0x0fu) << 8) | o[1];
++		unsigned yr = ((o[4] & 0x0fu) << 8) | o[3];
++		x[i] = (int)(xr * 1080u / xraw);
++		y[i] = (int)(yr * 2340u / yraw);
++		mask |= 1u << i;
++	}
++	touch_report(mask, x, y);
++	return 0;
++}
++
++static void
++touch_fajita(void)
++{
++	unsigned stage = 3, xraw = 1080, yraw = 2340;
++	(void)PE_parse_boot_argn("sweetts_stage", &stage, sizeof(stage));
++	(void)PE_parse_boot_argn("sweetts_xraw", &xraw, sizeof(xraw));
++	(void)PE_parse_boot_argn("sweetts_yraw", &yraw, sizeof(yraw));
++	if (!xraw || !yraw) {
++		xraw = 1080;
++		yraw = 2340;
++	}
++	printf("SWEET TS: fajita RMI4, stage %u, maps gcc/north/east/se\n", stage);
++	st.gcc = ml_io_map(TOUCH_GCC_PA, 0x60000);
++	st.gpio = ml_io_map(FJ_NORTH_PA, 0x64000);	/* through gpio99 */
++	st.gpio_e = ml_io_map(FJ_EAST_PA, 0x7e000);	/* through gpio125 */
++	st.se = ml_io_map(FJ_SE_PA, 0x4000);
++	if (!st.gcc || !st.gpio || !st.gpio_e || !st.se) {
++		printf("SWEET TS: MMIO mapping failed\n");
++		return;
++	}
++	if (!touch_clocks() || !touch_se_init() || stage < 2) {
++		printf("SWEET TS: stopping after clocks/SE (stage %u)\n", stage);
++		return;
++	}
++	printf("SWEET TS: TLMM reset99=%#x/%#x attn125=%#x/%#x vio88=%#x/%#x sda50=%#x\n",
++	    touch_rd(st.gpio, TOUCH_GPIO_CFG(FJ_GPIO_RESET)), touch_rd(st.gpio, TOUCH_GPIO_IO(FJ_GPIO_RESET)),
++	    touch_rd(st.gpio_e, TOUCH_GPIO_CFG(FJ_GPIO_ATTN)), touch_rd(st.gpio_e, TOUCH_GPIO_IO(FJ_GPIO_ATTN)),
++	    touch_rd(st.gpio_e, TOUCH_GPIO_CFG(FJ_GPIO_VIO)), touch_rd(st.gpio_e, TOUCH_GPIO_IO(FJ_GPIO_VIO)),
++	    touch_rd(st.gpio, TOUCH_GPIO_CFG(50)));
++	/* Hold the IC in reset while VDD and VIO come up (vendor tpd_hw_pwron order). */
++	touch_gpio_at(st.gpio_e, FJ_GPIO_ATTN, 0, 3, 3, false, false);	/* input, pull-up */
++	touch_gpio_at(st.gpio, FJ_GPIO_RESET, 0, 3, 3, true, false);
++	int power_error = sweet_rpmh_vreg_enable("ldoa28", 3008);
++	if (power_error) {
++		printf("SWEET TS: L28A RPMh enable failed %d; stopping\n", power_error);
++		return;
++	}
++	touch_wait(10);
++	touch_gpio_at(st.gpio_e, FJ_GPIO_VIO, 0, 0, 3, true, true);	/* 1.8 V load switch */
++	touch_wait(10);
++	touch_gpio_at(st.gpio, 49, 1, 0, 0, false, false);	/* qup12 SCL */
++	touch_gpio_at(st.gpio, 50, 1, 0, 0, false, false);	/* qup12 SDA */
++	touch_gpio_at(st.gpio, FJ_GPIO_RESET, 0, 3, 3, true, true);
++	touch_wait(10);
++	touch_gpio_at(st.gpio, FJ_GPIO_RESET, 0, 3, 3, true, false);
++	touch_wait(10);
++	touch_gpio_at(st.gpio, FJ_GPIO_RESET, 0, 3, 3, true, true);
++	touch_wait(200);	/* mainline syna,startup-delay-ms / reset-delay-ms */
++	printf("SWEET TS: powered and out of reset, attn125=%u\n",
++	    touch_rd(st.gpio_e, TOUCH_GPIO_IO(FJ_GPIO_ATTN)) & 1u);
++	if (stage < 3 || !rmi_setup()) {
++		printf("SWEET TS: stopping before reports (stage %u)\n", stage);
++		return;
++	}
++	printf("SWEET TS: reporting, poll 10 ms, raw max %ux%u -> 1080x2340\n", xraw, yraw);
++	unsigned errors = 0, dumps = 0;
++	while (!st.dead) {
++		if (rmi_report(xraw, yraw, &dumps)) {
++			if ((errors++ % 100u) == 0) {
++				printf("SWEET TS: report err irq=%#x\n", st.irq_status);
++			}
++			if (errors == 10) {
++				touch_report(0, st.x, st.y);	/* release after persistent bad reads */
++			}
++		} else {
++			errors = 0;
++		}
++		touch_wait(10);
++	}
++	touch_report(0, st.x, st.y);
++}
++
+ static void
+ touch_thread(void *arg, wait_result_t result)
+ {
+@@ -558,6 +794,10 @@ touch_thread(void *arg, wait_result_t result)
+ 	(void)PE_parse_boot_argn("sweettouchdelay", &delay_s, sizeof(delay_s));
+ 	printf("SWEET TOUCH: starting in %u s\n", delay_s);
+ 	touch_wait(delay_s * 1000u);
++	if (st.fajita) {
++		touch_fajita();
++		goto out;
++	}
+ 	printf("SWEET TOUCH: mapping GCC/TLMM/SE7\n");
+ 	st.gcc = ml_io_map(TOUCH_GCC_PA, 0x60000);
+ 	st.gpio = ml_io_map(TOUCH_NORTH_PA, 0x5b000);
+@@ -644,6 +884,7 @@ sweet_touch_init(void)
+ 		return;
+ 	}
+ 	st.started = true;
++	st.fajita = sweet_board_is("oneplus,fajita");
+ 	(void)PE_parse_boot_argn("sweettouch", &enabled, sizeof(enabled));
+ 	(void)PE_parse_boot_argn("sweettouchirq", &st.irq_hint, sizeof(st.irq_hint));
+ 	if (!enabled) {
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 9880317..a093a0f 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -79,9 +79,12 @@ static const struct usb_clk usb_cbcr_sdm845[] = {
+ #define USB_NCLK (sizeof(usb_cbcr_sm7150) / sizeof(usb_cbcr_sm7150[0]))
+ _Static_assert(sizeof(usb_cbcr_sdm845) == sizeof(usb_cbcr_sm7150), "clock tables");
+ 
+-/* The ADT root compatible names the board (tools/mkadt.py). */
+-static bool
+-usb_board_is(const char *want)
++/* The ADT root compatible names the board (tools/mkadt.py). Shared with
++ * sweet_rpmh.c and sweet_touch.c. */
++bool sweet_board_is(const char *want);
++
++bool
++sweet_board_is(const char *want)
+ {
+ 	DTEntry root;
+ 	const char *compat;
+@@ -125,7 +128,7 @@ sweet_usb_probe(void)
+ 		return;
+ 	}
+ 	probed = true;
+-	const struct usb_clk *usb_cbcr = usb_board_is("oneplus,fajita") ? usb_cbcr_sdm845 : usb_cbcr_sm7150;
++	const struct usb_clk *usb_cbcr = sweet_board_is("oneplus,fajita") ? usb_cbcr_sdm845 : usb_cbcr_sm7150;
+ 
+ 	/* sweetusb=0 off, 1 (default) report state only, 2 also start the USB device */
+ 	PE_parse_boot_argn("sweetusb", &enabled, sizeof(enabled));
+@@ -931,7 +934,7 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	 * after ABL exits) uses that window, mapped write-combining, so no
+ 	 * cache maintenance is needed. sweetusbdma=0 keeps kernel memory.
+ 	 */
+-	uint64_t fixed_pa = usb_board_is("oneplus,fajita") ? 0x99800000ULL : 0;
++	uint64_t fixed_pa = sweet_board_is("oneplus,fajita") ? 0x99800000ULL : 0;
+ 	PE_parse_boot_argn("sweetusbdma", &fixed_pa, sizeof(fixed_pa));
+ 	if (fixed_pa != 0) {
+ 		ud.dma = ml_io_map_wcomb((vm_offset_t)fixed_pa, UD_SIZE);
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index 27bc49d..d8b0a55 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -368,6 +368,7 @@ protected:
+ private:
+ 	IOLock *fLock;
+ 	int fLogicalW, fLogicalH, fOffX, fOffY;
++	int fPanelW, fPanelH;   /* boot framebuffer: 1080x2400 sweet, 1080x2340 fajita */
+ 	bool fDown[SWEET_TOUCH_FINGERS];
+ 	bool fEdge[SWEET_TOUCH_FINGERS];
+ 	IOFixed fX[SWEET_TOUCH_FINGERS];
+@@ -433,11 +434,16 @@ SweetHIDTouch::start(IOService *provider)
+ 		return false;
+ 	}
+ 	int native = 0;
++	PE_Video video;
+ 	PE_parse_boot_argn("sweetfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1080 : 1125;
+-	fLogicalH = native ? 2400 : 2436;
+-	fOffX = (fLogicalW - 1080) / 2;
+-	fOffY = (fLogicalH - 2400) / 2;
++	PE_current_console(&video);
++	fPanelW = video.v_width ? (int)video.v_width : 1080;
++	fPanelH = video.v_height ? (int)video.v_height : 2400;
++	/* Same centring as SweetFramebuffer.cpp: panel pixels inside 1125x2436. */
++	fLogicalW = native ? fPanelW : 1125;
++	fLogicalH = native ? fPanelH : 2436;
++	fOffX = (fLogicalW - fPanelW) / 2;
++	fOffY = (fLogicalH - fPanelH) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -458,8 +464,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 	if (finger < 0 || finger >= SWEET_TOUCH_FINGERS) {
+ 		return;
+ 	}
+-	x = x < 0 ? 0 : (x > 1079 ? 1079 : x);
+-	y = y < 0 ? 0 : (y > 2399 ? 2399 : y);
++	x = x < 0 ? 0 : (x > fPanelW - 1 ? fPanelW - 1 : x);
++	y = y < 0 ? 0 : (y > fPanelH - 1 ? fPanelH - 1 : y);
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+@@ -472,8 +478,8 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > 1079 - SWEET_TOUCH_EDGE_PX ||
+-		    y < SWEET_TOUCH_EDGE_PX || y > 2399 - SWEET_TOUCH_EDGE_PX;
++		fEdge[finger] = x < SWEET_TOUCH_EDGE_PX || x > fPanelW - 1 - SWEET_TOUCH_EDGE_PX ||
++		    y < SWEET_TOUCH_EDGE_PX || y > fPanelH - 1 - SWEET_TOUCH_EDGE_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
