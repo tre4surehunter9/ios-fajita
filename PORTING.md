@@ -114,6 +114,13 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
 - How to get a dump: phone in `05c6:900e` → `work/tools/qdl/build/qdl ramdump --debug -o DIR`
   (one shot: it resets the phone afterwards; the device node is world-writable, no sudo).
 
+- **0086r** (CI 40808729608, DMA window `0x99800000`): **same crash**. Dump mode about 45 s after
+  boot; RAM log (`logs/ram-0086r.txt`) again ends at `soft reset done`, after `DMA area 0x99800000
+  (fixed, uncached)`. So the DMA address was not the trigger. The bootstrap thread never returns
+  from the gadget start (no `BSD root:`). Remaining suspects: the USB controller once the PHY
+  runs (0084u, PHY off, read-only: no crash), or the first UFS write (`sweetlog` flush 10 s after
+  start; 0084u had no writes). Bisect image **0086n** = same with `sweetusb=1`.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
