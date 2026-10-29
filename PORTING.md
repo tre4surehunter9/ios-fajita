@@ -43,7 +43,14 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
   `Failed to write boot-picker-bringup-reason to NVRAM.` (expected, there is no NVRAM). AppleCLCD
   reports `1080x2340 stride 4320 at 0x9d400000, presented as 1125x2436`. No panic.
 
-## Planned: USB live console (after milestone 1)
+## USB live console (in progress, patch 0084)
+
+PC side, no sudo: NetworkManager profile `ios-usb` (created 2026-10-28) matches the
+phone's host-side MAC `02:00:5e:77:ee:01` and sets `192.168.7.1/24`. To remove it:
+`nmcli con delete ios-usb`. Capture with `tools/sweet-usblog.py logs/NAME.txt --secs N`.
+Phone side: boot-arg `sweetusb=2`.
+
+### Background
 
 Being able to read the console from the PC instead of photos. Sweet already has
 this: patches 0072-0077, boot-arg `sweetusb=2`. The phone appears as a CDC-ECM
