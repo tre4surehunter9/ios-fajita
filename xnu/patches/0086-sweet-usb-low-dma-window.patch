@@ -1,8 +1,16 @@
 diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
-index 9ad60e8..2d8f41e 100644
+index 9ad60e8..9880317 100644
 --- a/bsd/dev/sweet_usb.c
 +++ b/bsd/dev/sweet_usb.c
-@@ -310,9 +310,16 @@ dwc_rd(uint32_t off)
+@@ -39,6 +39,7 @@
+ #include <pexpert/device_tree.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+ static void sweet_usb_gadget_start(vm_offset_t dwc);
+ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+@@ -310,9 +311,16 @@ dwc_rd(uint32_t off)
  	return usb_rd(ud.dwc, off);
  }
  
@@ -19,7 +27,7 @@ index 9ad60e8..2d8f41e 100644
  	flush_dcache64((addr64_t)(ud.dma_pa + off), len, TRUE);
  }
  
-@@ -913,16 +920,40 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+@@ -913,16 +921,40 @@ sweet_usb_gadget_start(vm_offset_t dwc)
  	thread_t thread;
  
  	ud.dwc = dwc;
