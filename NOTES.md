@@ -16,6 +16,25 @@ Details, boot log and hardware facts: `PORTING.md`. State:
   report for the USB stream) has never compiled. Next: re-queue CI, prepare `shim-boot-0089s.img`
   (0088q boot-args minus `sweetfb_noconsole`, `sweetusb=1`), photograph the `SWEET USB: SMMU` lines,
   then program a translation-off context bank for stream 0x740.
+- **Handoff 2026-10-29 evening.** boot_a = `shim-boot-0092a.img` (kernel 0092, ADT with MACs, About
+  "OnePlus 6T" / model number "ios-fajita", serial blank, `sweetusb=2 sweetiokitd=20`, console muted).
+  userdata = root v2 (InterfaceNamer 5 s timeouts). Settings → About works.
+  Open / next, in the user's order:
+  1. **Full-size root (v3):** `work/build-root.sh v3 112630M` (user runs it, sudo), then flash
+     userdata on the user's yes. The volume must end before the last 4100 KiB of the partition (the
+     persistent log).
+  2. **USB on normal boots:** from boot_a, ABL leaves the USB GDSC and clocks off (edi194 saw the same),
+     so our driver stops. Needs GDSC/clock/RCG bring-up plus a full QUSB2 init (maybe RPMh votes for
+     L1A/L12A/L24A). First step: a boot_a image with the console visible, one photo of the
+     `SWEET USB` lines. Until then the live console only works with `fastboot boot`
+     (`socat -u udp-recv:5140,reuseaddr -` on the PC).
+  3. **GPU acceleration:** user points at https://github.com/akshaynexus/iOSPlus10 (OnePlus 10 Pro,
+     SM8450, Adreno 730/a7xx, "Metal2Vulkan GPU acceleration", UniXNU/DarwinBoot). Our SoC is SDM845 /
+     Adreno 630 (a6xx); edi194/ios-fajita has the a630 kernel-side bring-up notes
+     (NOTES-FAJITA.md). Start by reading iOSPlus10 docs/research-report.md and docs/plan.md.
+  - CI: fix for the 0092 board check (3e6d6b9) is committed and built in later runs. Kernel images
+    still pass `sweetiokitd=20` explicitly, which is harmless.
+  - Also seen: assetsd crash (sig 6), driverkitd killed after deferred matching starts.
 - **Was blocked (fixed 2026-10-29):** (1) GUI stays on the Apple logo: SpringBoard waits in
   `__LAUNCH_SERVICES_IS_RESEEDING_ITS_DATABASE_AND_MAY_BLOCK__` (sync XPC to lsd), first boot
   of a fresh root. (2) USB device start (`sweetusb=2`) resets the SoC into Qualcomm dump mode
