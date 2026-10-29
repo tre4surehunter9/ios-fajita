@@ -139,6 +139,15 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   without hardware (same as sweet). The kernel console kept drawing over the GUI because
   `sweetfb_noconsole=1` was missing. **0087g** = 0087s + `sweetfb_noconsole=1 sweetfb_hz=30`.
 
+- **0087g** (`sweetfb_noconsole=1`): Apple logo, then no change for 10+ min (GUI never past the
+  logo).
+- **0088t** (CI 40814660954, `cpus=8 sweetkeys=1 sweettouch=1 sweettouchdelay=60`, console
+  visible, 2026-10-28): **TOUCH WORKS.** `SWEET HID: touch 0 down at 735,1892` / `up`, so RMI4
+  over wrapper1 SE4 with L28A, the GPIO88 switch and the reset pulse all work. No dump mode in
+  5+ min. **Milestone 3 hardware (8 CPUs, keys, touch) is in place.** Remaining: the GUI stays
+  on the logo. SpringBoard[26] and backboardd[56] are alive (SMP sampler); their stacks need
+  symbolicating.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
