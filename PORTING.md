@@ -83,6 +83,15 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   starts. Open risk: if ABL also turned off the PHY LDOs (l1a/l12a/l24a), CORE_READY stays 0
   and we need RPMh votes.
 
+- **Root image v1** (`work/root/ios16-root-20H392-v1.img`, sha256 `a5566340…4e90`, built by
+  `work/build-root.sh` = README step 2; tweaks applied, data ark skipped: no
+  mobileactivationd container in a fresh image). **Flashed to `userdata` 2026-10-28**
+  (user-approved; Sailfish erased): 24 sparse chunks, all OKAY, 395 s. Each "Writing" reported
+  0.001 s, so this ABL seems to write while the next chunk arrives. Unverified until the
+  kernel mounts it.
+- **0085r** prepared: kernel 0085, real root `rd=ufsroot0 ufsrw=1 rootrw=1`, `sweetusb=2
+  sweetecon=1 sweetlog=1 nointr_consio=1`, `cpus=1`, touch/keys off.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
