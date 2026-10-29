@@ -1,0 +1,59 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 1bf2299..9ad60e8 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -149,6 +149,7 @@ sweet_usb_probe(void)
+ 		printf("SWEET USB: controller unpowered or unclocked; DWC3 not read\n");
+ 		return;
+ 	}
++	vm_offset_t phy;
+ 	vm_offset_t dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
+ 	if (dwc == 0) {
+ 		printf("SWEET USB: DWC3 map failed\n");
+@@ -162,22 +163,34 @@ sweet_usb_probe(void)
+ 	printf("SWEET USB: DWC3 GEVNTADR 0x%08x%08x GEVNTSIZ 0x%08x GEVNTCOUNT 0x%08x GHWPARAMS0 0x%08x\n",
+ 	    usb_rd(dwc, 0xc404), usb_rd(dwc, 0xc400), usb_rd(dwc, 0xc408), usb_rd(dwc, 0xc40c),
+ 	    usb_rd(dwc, 0xc140));
+-	if (enabled >= 2) {
+-		sweet_usb_gadget_start(dwc);
+-	}
+ 	if (cbcr[5] & CBCR_CLK_OFF) {
+ 		printf("SWEET USB: ahb2phy clock off; QUSB2 PHY not read\n");
+-		return;
++	} else if ((phy = ml_io_map(QUSB2_PA, QUSB2_SIZE)) != 0) {
++		/* DT qcom,qusb-phy-reg-offset order (Linux phy-msm-qusb-v2.c): PORT_TUNE1 0x240,
++		 * PLL_COMMON_STATUS_ONE 0x1a0, PWR_CTRL1 0x210, INTR_CTRL 0x230,
++		 * PLL_CORE_INPUT_OVERRIDE 0x0a8, TEST1 0x254. */
++		printf("SWEET USB: QUSB2 PLL_STATUS 0x%08x PWR_CTRL1 0x%08x PORT_TUNE1 0x%08x TEST1 0x%08x\n",
++		    usb_rd(phy, 0x1a0), usb_rd(phy, 0x210), usb_rd(phy, 0x240), usb_rd(phy, 0x254));
++		/*
++		 * fajita: ABL powers the PHY down when it leaves fastboot
++		 * (PWR_CTRL1 0x23 = VREF_SUPPLY_TRIM | CLAMP_N_EN | POWER_DOWN,
++		 * Linux phy-qcom-qusb2.c qusb2_v2 disable_ctrl). Without the PHY
++		 * clock DWC3 endpoint commands time out. Power it up the way
++		 * qusb2_phy_init() finishes: clear POWER_DOWN only, wait, then
++		 * check CORE_READY (bit 0 of PLL_STATUS), keeping ABL's tuning.
++		 */
++		if (enabled >= 2 && (usb_rd(phy, 0x210) & 1)) {
++			*(volatile uint32_t *)(phy + 0x210) = usb_rd(phy, 0x210) & ~1u;
++			__asm__ volatile ("dsb sy" ::: "memory");
++			delay(200);
++			printf("SWEET USB: QUSB2 powered up: PWR_CTRL1 0x%02x PLL_STATUS 0x%02x (core %s)\n",
++			    usb_rd(phy, 0x210) & 0xff, usb_rd(phy, 0x1a0) & 0xff,
++			    (usb_rd(phy, 0x1a0) & 1) ? "ready" : "NOT ready");
++		}
+ 	}
+-	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
+-	if (phy == 0) {
+-		return;
++	if (enabled >= 2) {
++		sweet_usb_gadget_start(dwc);
+ 	}
+-	/* DT qcom,qusb-phy-reg-offset order (Linux phy-msm-qusb-v2.c): PORT_TUNE1 0x240,
+-	 * PLL_COMMON_STATUS_ONE 0x1a0, PWR_CTRL1 0x210, INTR_CTRL 0x230,
+-	 * PLL_CORE_INPUT_OVERRIDE 0x0a8, TEST1 0x254. */
+-	printf("SWEET USB: QUSB2 PLL_STATUS 0x%08x PWR_CTRL1 0x%08x PORT_TUNE1 0x%08x TEST1 0x%08x\n",
+-	    usb_rd(phy, 0x1a0), usb_rd(phy, 0x210), usb_rd(phy, 0x240), usb_rd(phy, 0x254));
+ }
+ 
+ /*

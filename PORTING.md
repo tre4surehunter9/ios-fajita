@@ -73,6 +73,16 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   scrolled off. Unlike edi194 (flashed boot, USB GDSC off), after `fastboot boot` the USB
   block is still powered.
 
+- **0084u again, photographed:** `"userdata" on LUN 0: first block 0x186f40, 112640 MiB`. USB GDSC
+  `0xf8222000` (on), all 7 clocks on. DWC3 `GSNPSID 0x5533300a` (v3.00a), `GCTL 0x00112000`
+  (device), `GUSB2PHYCFG 0x2400`, `DCTL 0x10f00000` (halted), ABL event buffer `0x99876000`.
+  Soft reset done in 1 ms, DEPSTARTCFG OK, then `ep0 cmd 0x1 timeout` (SETEPCONFIG).
+  QUSB2 `PWR_CTRL1 0x23` is exactly Linux's qusb2_v2 `disable_ctrl` (VREF_SUPPLY_TRIM |
+  CLAMP_N_EN | POWER_DOWN), and `PLL_STATUS` bit 0 (CORE_READY) is 0. ABL powers the PHY
+  down on handoff. **0085** clears POWER_DOWN like `qusb2_phy_init()` before the gadget
+  starts. Open risk: if ABL also turned off the PHY LDOs (l1a/l12a/l24a), CORE_READY stays 0
+  and we need RPMh votes.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

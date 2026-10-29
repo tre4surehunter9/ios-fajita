@@ -189,6 +189,7 @@ Not in git: partition backups, live device trees, recovery images, Apple firmwar
 | 0082 | Early console takes the framebuffer from `boot_args.Video` (needed for the OnePlus 6T port, see `PORTING.md`) |
 | 0083 | `sweetecon=1`: synchronous console straight to the screen, bypassing the console ring |
 | 0084 | USB console on fajita: SDM845 USB clock offsets, chosen from the ADT; USB also starts when UFS init fails |
+| 0085 | Power the QUSB2 PHY back up when the bootloader left it powered down (fajita after `fastboot boot`) |
 
 ## Key hardware facts
 
