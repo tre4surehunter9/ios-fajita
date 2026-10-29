@@ -170,6 +170,10 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   them); our ADT had none. **0088m**: fajita ADT gains synthetic locally administered MACs
   02:66:6a:00:00:01..04 (sweet ADT unchanged).
 
+- **0088m** (2026-10-29): **SPRINGBOARD WORKS** (user report). The `/chosen` MAC addresses
+  unblocked MobileGestalt → lsd seed → SpringBoard. **0088q** = 0088m + `sweetfb_noconsole=1`
+  (console muted over the GUI; still in the log ring, panics still drawn); the current daily image.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
