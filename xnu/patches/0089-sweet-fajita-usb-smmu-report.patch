@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index a093a0f..160cd85 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -102,6 +102,65 @@ sweet_board_is(const char *want)
+ 	return false;
+ }
+ 
++/*
++ * fajita: USB masters through the apps SMMU (0x15000000, live FDT apps-smmu,
++ * qcom,qsmmu-v500, qcom,skip-init) as stream 0x740 with qcom,smmu-s1-bypass.
++ * Read-only report of how that stream is routed after ABL's handoff
++ * (ARM SMMUv2 register map: sCR0 0x0, IDR0/1 0x20/0x24, GFSR 0x48,
++ * SMR 0x800+4n, S2CR 0xc00+4n, CBAR in GR1, context banks after the
++ * global space).
++ */
++#define SMMU_PA                 0x15000000
++#define SMMU_SIZE               0x00080000
++#define USB_SID                 0x740u
++
++static uint32_t usb_rd(vm_offset_t base, uint32_t off);
++
++static void
++usb_smmu_report(void)
++{
++	vm_offset_t smmu = ml_io_map(SMMU_PA, SMMU_SIZE);
++	if (smmu == 0) {
++		printf("SWEET USB: SMMU map failed\n");
++		return;
++	}
++	uint32_t scr0 = usb_rd(smmu, 0x0), idr0 = usb_rd(smmu, 0x20), idr1 = usb_rd(smmu, 0x24);
++	unsigned nsmr = idr0 & 0xffu, ncb = idr1 & 0xffu;
++	uint32_t page = (idr1 & (1u << 31)) ? 0x10000u : 0x1000u;
++	uint32_t npage = 1u << (((idr1 >> 28) & 7u) + 1u);
++	printf("SWEET USB: SMMU sCR0 %#x (CLIENTPD %u USFCFG %u) IDR0 %#x IDR1 %#x GFSR %#x smr=%u cb=%u page=%#x npage=%u\n",
++	    scr0, scr0 & 1u, (scr0 >> 10) & 1u, idr0, idr1, usb_rd(smmu, 0x48), nsmr, ncb, page, npage);
++	if (nsmr > 128 || ncb > 128 || (uint64_t)page * npage * 2 > SMMU_SIZE) {
++		printf("SWEET USB: SMMU geometry unexpected; not walking\n");
++		return;
++	}
++	unsigned valid = 0, hits = 0;
++	for (unsigned i = 0; i < nsmr; i++) {
++		uint32_t smr = usb_rd(smmu, 0x800 + 4 * i);
++		if (!(smr & (1u << 31))) {
++			continue;
++		}
++		valid++;
++		uint32_t id = smr & 0x7fffu, mask = (smr >> 16) & 0x7fffu;
++		if ((USB_SID ^ id) & ~mask & 0x7fffu) {
++			continue;
++		}
++		hits++;
++		uint32_t s2cr = usb_rd(smmu, 0xc00 + 4 * i);
++		unsigned type = (s2cr >> 16) & 3u, cb = s2cr & 0xffu;
++		printf("SWEET USB: SMMU SMR%u id %#x mask %#x -> S2CR %#x type %s cb %u\n",
++		    i, id, mask, s2cr, type == 0 ? "translate" : type == 1 ? "bypass" : "fault", cb);
++		if (type == 0 && cb < ncb) {
++			vm_offset_t c = smmu + (vm_offset_t)npage * page + (vm_offset_t)cb * page;
++			printf("SWEET USB: SMMU CB%u CBAR %#x SCTLR %#x TTBR0 %#x%08x TCR %#x FSR %#x FAR %#x%08x\n",
++			    cb, usb_rd(smmu, page + 4 * cb), usb_rd(c, 0x0), usb_rd(c, 0x24), usb_rd(c, 0x20),
++			    usb_rd(c, 0x30), usb_rd(c, 0x58), usb_rd(c, 0x64), usb_rd(c, 0x60));
++		}
++	}
++	printf("SWEET USB: SMMU %u valid SMRs, %u match stream %#x%s\n", valid, hits, USB_SID,
++	    hits ? "" : " (unmatched: sCR0.USFCFG decides bypass/fault)");
++}
++
+ #define DWC3_PA                 0x0a600000
+ #define DWC3_SIZE               0x0000d000
+ #define QUSB2_PA                0x088e2000
+@@ -192,6 +251,9 @@ sweet_usb_probe(void)
+ 			    (usb_rd(phy, 0x1a0) & 1) ? "ready" : "NOT ready");
+ 		}
+ 	}
++	if (sweet_board_is("oneplus,fajita")) {
++		usb_smmu_report();
++	}
+ 	if (enabled >= 2) {
+ 		sweet_usb_gadget_start(dwc);
+ 	}

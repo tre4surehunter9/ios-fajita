@@ -193,6 +193,7 @@ Not in git: partition backups, live device trees, recovery images, Apple firmwar
 | 0086 | USB DMA in a fixed low-memory window (`sweetusbdma=`, fajita default `0x99800000`) |
 | 0087 | fajita keys: PM8998 power (PON), volume up/down (GPIO6/GPIO5) |
 | 0088 | fajita touch: Synaptics RMI4 on wrapper1 SE4, L28A over RPMh (SDM845 RSC), touch mapping follows the panel height |
+| 0089 | fajita: read-only report of the apps-SMMU routing of the USB stream (0x740) |
 
 ## Key hardware facts
 
