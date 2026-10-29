@@ -95,6 +95,13 @@ def main():
                     ptr = read(target, 8)
                     target = struct.unpack('<Q', ptr)[0] & 0xfffffffff if len(ptr) == 8 else 0
                 s = cstring(read, target) if target else None
+                if target and not s:
+                    # CFString constant: {isa, flags, const char *ptr, length}
+                    raw = read(target + 16, 8)
+                    if len(raw) == 8:
+                        ptr = struct.unpack('<Q', raw)[0] & 0xfffffffff
+                        cf = cstring(read, ptr) if ptr else None
+                        s = f'@{cf}' if cf else None
                 note = f'   ; {target:#x}' + (f' "{s}"' if s else '')
         mark = '=>' if pc == base + off else '  '
         print(f'{mark} +{pc - base:#07x}  {op:8s} {args}{note}')

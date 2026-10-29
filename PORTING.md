@@ -235,6 +235,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   but the ADT root's properties live on IOPlatformExpertDevice. Fixed in 0092 (uses the provider);
   until rebuilt, `sweetiokitd=20` forces it (image 0092c).
 
+- **0092c/0092p** (`sweetiokitd=20`): stand-in ran (`root busy 1 -> 1` right after, then `0 busy services`
+  at 120 s), but About still stalls with the identical stack. SystemConfiguration's quiesce wait
+  (`tools/dsc-dis.py`, CFStrings resolved) waits for configd's `Plugin:InterfaceNamer` key to carry
+  `*QUIET*`, `*COMPLETE*` or `*TIMEOUT*`, so the stall is InterfaceNamer's timeout. driverkitd is killed
+  (sig 9) once deferred matching starts. Next: `sweetsample=configd,Preferences` (image 0092s).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
