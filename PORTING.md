@@ -210,6 +210,13 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   and the console streams to `tools/sweet-usblog.py`. The first 200 USB events are printed (EP3
   XferComplete `0xc046`, noisy but bounded by the driver's cap).
 
+- **Settings → About freeze diagnosed (0090p, sampler over USB, Preferences[244] slide 0x26e5c000):**
+  main thread `-[PSGAboutController viewDidLoad]` → `-[PSGAboutDataSource _loadValues]` → `_macAddress`
+  → SystemConfiguration `dispatch_once` wait. t6 holds it, inside SystemConfiguration
+  `__wait_for_IOKit_to_quiesce` (from `-[PSUIPrefsListController updateEthernetWithCompletion:]`).
+  **Some IOService never stops being busy**, so the registry never goes quiet. **0091** adds
+  `sweetbusy=N` to name the busy services.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

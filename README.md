@@ -195,6 +195,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0088 | fajita touch: Synaptics RMI4, L28A over the SDM845 RPMh mailbox; touch mapping follows the panel height |
 | 0089 | fajita: read-only report of the apps-SMMU routing of the USB stream (0x740) |
 | 0090 | fajita: route the USB stream through a translation-off SMMU context bank (Linux arm-smmu-qcom bypass quirk), which makes the USB console work |
+| 0091 | `sweetbusy=N`: log IOServices that stay busy (registry never quiet); USB data-endpoint events no longer echo into the live log |
 
 ## Key hardware facts (OnePlus 6T)
 
