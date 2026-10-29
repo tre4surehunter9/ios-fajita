@@ -7,7 +7,8 @@
 Separate board next to sweet; state, plan and hardware facts are in `PORTING.md`.
 Patch 0082 (framebuffer from boot_args) changes no sweet behaviour: sweet's shim
 passes the same 0x9c000000 1080x2400 geometry it always did. Built in CI and booted on fajita
-(milestone 1, kernel waiting for root, 2026-10-28); not re-booted on sweet.
+(milestone 1, kernel waiting for root, 2026-10-28); milestone 2 (UFS root, launchd and
+daemons running) the same evening with patches 0084-0086. Not re-booted on sweet.
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 

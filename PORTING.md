@@ -121,6 +121,13 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   runs (0084u, PHY off, read-only: no crash), or the first UFS write (`sweetlog` flush 10 s after
   start; 0084u had no writes). Bisect image **0086n** = same with `sweetusb=1`.
 
+- **0086n** (`sweetusb=1`, real rw root, 2026-10-28 ~22:03): **MILESTONE 2 REACHED: UFS root +
+  iOS userland.** No dump mode after 3+ min, so **the USB device start is what reset the SoC**
+  (USB is now a separate task; the UFS write path is fine). The screen shows launchd boot
+  tasks: MSUEarlyBootTask, `cc_fips_test` (corecrypto FIPS POST all PASSED), `exec keybagd`,
+  SMP sampler samples 0-2. Expected noise: BindFS lookup of `/private/var/hardware/Factory...`
+  and `System/Library/Pearl/ReferenceFrames failed error: 2` (no factory/Face ID data).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
