@@ -269,6 +269,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   ~100 s after `fastboot reboot` (not yet explained; check the cable, timing, or whether USB comes up
   later). Re-flashed boot_a with the "ios-fajita" model-number image.
 
+- **2026-10-29: userdata = root v3** (full size: HFS+ volume 112630 MiB of the 112640 MiB partition,
+  about 98 GiB free; built with `work/build-root.sh v3 112630M`, flashed by the user). **boot_a** =
+  `shim-boot-0092a.img` with About Model Number "fajita" and Serial Number "tre4surehunter9/ios-fajita"
+  (flashed before v3's first boot, so MobileGestalt's cache starts fresh). If a daemon misbehaves,
+  suspect the serial number first: it has an unusual format.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
