@@ -60,11 +60,10 @@ BOARDS = {
         cpu_compatible='qcom,kryo385',
         # 0-3 Cortex-A55 1.766 GHz, 4-7 Cortex-A75 2.803 GHz (mainline OPP tables)
         cpu_hz=lambda core: 2803200000 if core >= 4 else 1766400000,
-        # Upper DDR bank. Every fixed carve-out in mainline sdm845.dtsi and
-        # sdm845-oneplus-common.dtsi is below 4 GiB (sweet's low range would
-        # cover rmtfs at 0xf5b00000). 2 GiB fits every 6T variant (6/8/10 GB);
-        # UNVERIFIED until the live FDT memory node is read (PORTING.md).
-        mem=(0x100000000, 0x80000000),
+        # Upper DDR bank. Live FDT (8 GB phone): RAM 0x80000000-0x27cabffff,
+        # every fixed reserved-memory region below 4 GiB, dynamic pools limited
+        # to alloc-ranges below 4 GiB. Same size as sweet's high range.
+        mem=(0x100000000, 0xfcc00000),
         # No UFS node until the UFS milestone: the kernel cannot touch the disk.
         ufs=False),
 }

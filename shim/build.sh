@@ -1,7 +1,7 @@
 #!/bin/bash
 # Build the shim and wrap it in a boot.img that mirrors the stock header.
 #   BOARD=sweet (default): header v2, raw Image, dtb section  -> out/shim-boot.img
-#   BOARD=fajita:          header v1, Image.gz + appended DTBs -> out-fajita/shim-boot.img
+#   BOARD=fajita:          header v0, Image.gz + appended DTBs -> out-fajita/shim-boot.img
 #                          (the OnePlus 6T stock layout; DTBs from dtb/fajita/dtbs,
 #                          see tools/extract-appended-dtbs.py)
 set -euo pipefail
@@ -38,16 +38,17 @@ else
 	(cd $OUT && rm -rf rd && mkdir rd && cd rd && find . | cpio -o -H newc --quiet | gzip -9 > ../ramdisk.bin)
 fi
 if [ "$BOARD" = fajita ]; then
-	# Reported (not yet verified here) that this ABL rejects a v2 header and a
-	# raw Image. Stock layout: gzip kernel, DTBs appended, header v1, no dtb section.
+	# Mirrors the boot_a image this ABL boots today (Sailfish, PORTING.md):
+	# header v0, base 0x80000000, gzip kernel with the three generic SDM845
+	# DTBs (v1/v2/v2.1) appended, no os_version. Reported elsewhere that a v2
+	# header or a raw Image is rejected.
 	DTBS=${DTBS:-../dtb/fajita/dtbs}
 	[ -s "$DTBS" ] || { echo "error: $DTBS missing (stock DTBs, see PORTING.md)" >&2; exit 1; }
 	gzip -9 -n -c $OUT/Image > $OUT/Image.gz
 	cat $OUT/Image.gz "$DTBS" > $OUT/Image.gz-dtb
-	mkbootimg --header_version 1 --kernel $OUT/Image.gz-dtb --ramdisk $OUT/ramdisk.bin \
-		--base 0 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
+	mkbootimg --header_version 0 --kernel $OUT/Image.gz-dtb --ramdisk $OUT/ramdisk.bin \
+		--base 0x80000000 --kernel_offset 0x8000 --ramdisk_offset 0x1000000 \
 		--tags_offset 0x100 --pagesize 4096 \
-		--os_version 11.0.0 --os_patch_level 2021-09 \
 		--cmdline "console=null" -o $OUT/shim-boot.img
 else
 	mkbootimg --header_version 2 --kernel $OUT/Image --ramdisk $OUT/ramdisk.bin \
