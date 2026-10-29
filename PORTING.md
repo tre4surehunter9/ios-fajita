@@ -36,6 +36,19 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
   console ring stopped reaching the panel.
 - **0083** (`sweetecon=1`): synchronous console to tell those apart.
 
+## Planned: USB live console (after milestone 1)
+
+Being able to read the console from the PC instead of photos. Sweet already has
+this: patches 0072-0077, boot-arg `sweetusb=2`. The phone appears as a CDC-ECM
+network device and streams the console as UDP to 192.168.7.1:5140, which
+`tools/sweet-usbnet.sh` captures. On fajita:
+- Same: DWC3 core `0xa600000` (✔ cmdline `androidboot.usbcontroller=a600000.dwc3`),
+  Qualcomm wrapper/QSCRATCH `0xa6f8800`, GCC base `0x100000` (M).
+- Must check: the GCC USB clock/GDSC register offsets, which differ between SM7150 and
+  SDM845. Also the QUSB2 PHY (on SDM845 mainline, USB 2 only is used, with
+  `qcom,select-utmi-as-pipe-clk`). The first step is sweet's read-only probe
+  (0072) with fajita offsets.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
