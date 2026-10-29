@@ -190,6 +190,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   xnu.yml -R tre4surehunter9/ios-fajita --ref fajita` once GitHub has macOS capacity again.
   0089 itself is untested (never compiled).
 
+- **2026-10-29: `shim-boot-0088q.img` flashed to `boot_a` by the user; it boots iOS without a PC.**
+  Still to observe: whether the A/B retry counter eventually rejects slot a (fix:
+  `fastboot set_active a`; long-term the kernel marks the slot successful), and whether
+  `fastboot boot` of test images still works with an image on the active slot. Restore with the
+  original `dtb/fajita/boot_a.img` (Sailfish kernel) if ever needed.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

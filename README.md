@@ -36,7 +36,7 @@ As of **2026-10-29** the OnePlus 6T boots to the **iOS lock screen and home scre
 - **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS, SEP / Face ID, GPU.** Their daemons start and fail or keep relaunching.
 - **The clock starts at 1970**, so anything that checks certificates fails.
 - **Security is off:** permissive code signing (AMFI) and sandbox policies, a stub AppleKeyStore, no data protection. Do not put anything personal on it.
-- **Every boot needs a PC** (`fastboot boot`) until a stable image is flashed to `boot_a`.
+- **Booting without a PC** means flashing the boot image to `boot_a` (`fastboot flash boot_a shim-boot.img`). This works on the author's phone. Whether the A/B retry counter eventually rejects the slot has not been tested over many boots yet (`fastboot set_active a` resets it).
 
 ## How it boots
 
