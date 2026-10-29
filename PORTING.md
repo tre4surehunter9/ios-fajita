@@ -128,6 +128,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   SMP sampler samples 0-2. Expected noise: BindFS lookup of `/private/var/hardware/Factory...`
   and `System/Library/Pearl/ReferenceFrames failed error: 2` (no factory/Face ID data).
 
+- **0087s** (CI 40811113076, `cpus=8 sweetkeys=1 sweetusb=1`, real root, 2026-10-28): **keys
+  work.** Vol up `key=1 gpio=0` → HID `0xe9`, vol down `key=2 gpio2=0` → `0xea`, power `key=0 pon=0x1`
+  → `0x30`, press and release each (`0 clients` that early). Passed CPU init with `cpus=8`, no panic;
+  the `8/8 CPUs initialized` line is not yet seen. launchd boot tasks run (mount-phase-1/2,
+  data-protection, keybag, usermanagerd, init_featureflags, dirs_cleaner).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
