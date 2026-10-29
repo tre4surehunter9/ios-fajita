@@ -1,0 +1,30 @@
+diff --git a/osfmk/console/serial_console.c b/osfmk/console/serial_console.c
+index c86b9e7..660c487 100644
+--- a/osfmk/console/serial_console.c
++++ b/osfmk/console/serial_console.c
+@@ -274,6 +274,12 @@ extern void sweet_log_append(const char *c, int size);  /* bsd/dev/sweet_ufs.c *
+  * the GUI. A panic draws again.
+  */
+ int sweet_console_muted;
++/*
++ * sweetecon=1: console_write() draws synchronously through _cnputs() instead
++ * of the console ring. On fajita the ring stopped reaching the panel during
++ * bring-up, so the screen showed stale text while the kernel went on.
++ */
++static TUNABLE(bool, sweet_econ, "sweetecon", false);
+ #endif
+ 
+ static inline void
+@@ -535,6 +541,12 @@ console_write(char *str, int size)
+ 	int chunk_size = CPU_CONS_BUF_SIZE;
+ 	int i = 0;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (sweet_econ) {
++		_cnputs(str, size, true);
++		return;
++	}
++#endif
+ 	if (__improbable(console_suspended || !is_console_initialized() || pmap_in_ppl())) {
+ 		/*
+ 		 * Output directly to console in the following cases:

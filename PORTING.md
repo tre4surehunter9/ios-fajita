@@ -30,6 +30,11 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
   `kperf_init_early()` waits forever in `ml_wait_max_cpus()`. edi194 hit the same stop.
   The visible console may lag behind the real stop point.
 - **0082b**: same kernel; the ADT CPU compatible is now `qcom,kryo385`, `qcom,kryo470`.
+  **The CPU nub fix works.** The kernel passes CPU init and reaches `bsd_init`; the screen
+  then shows `dlil_init: Waiting for all the created dlil kernel threads to get scheduled
+  at least once.` Sweet passed this point. Unknown whether the kernel is stuck or the
+  console ring stopped reaching the panel.
+- **0083** (`sweetecon=1`): synchronous console to tell those apart.
 
 ## Blocked / open
 
