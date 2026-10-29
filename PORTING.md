@@ -223,6 +223,14 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
 - **User decision (2026-10-29):** no changes to About-page values (model name, serial, ...) until
   at least GPU acceleration works.
 
+- **0091b** (CI 40962112681, `sweetbusy=120`): rounds at 120 s and 240 s both show exactly one busy
+  service: `D22AP <IOPlatformExpertDevice> busy=1 depth=2` (the root). Cause: IOStartIOKit adds a root
+  busy count until kernelmanagerd sends personalities (`iokitDaemonAvailable()` is true in the
+  macOS-derived config without NO_KEXTD), and iOS has no kernelmanagerd. **0092**: a stand-in calls
+  `OSKext::setIOKitDaemonActive()` + `IOService::iokitDaemonLaunched()` once after 20 s (fajita
+  default; sweet off unless `sweetiokitd=N`). Making `iokitDaemonAvailable()` false instead would
+  panic on any later kext request.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
