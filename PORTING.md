@@ -159,6 +159,17 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   (`apfs-fuse work/sysos.dmg work/mnt-sysos`, the dmg symlinked to a name without commas), then
   `tools/dsc-a2s.py work/mnt-sysos/root/System/Library/Caches/com.apple.dyld SLIDE ADDR...`.
 
+- **0088l** (2026-10-29, `sweetsample=SpringBoard,lsd`): lsd[100] alive, slide 0x2db74000. t4 serves
+  SpringBoard in `__LAUNCH_SERVICES_CLIENTS_ARE_WAITING_FOR_THE_DATABASE_TO_FINISH_SEEDING__`. t1 (the
+  seed): `-[MIInstalledInfoGatherer _populatePlaceholderRecordValues:...]` →
+  `+[MIInstallationIdentity installationIdentityForBundle:...]` → `_GenerateBuiltInAppInstallSessionID`
+  → libMobileGestalt → `dispatch_semaphore_wait`. t6: MobileGestalt CFRunLoop worker. `tools/dsc-dis.py`
+  shows the wait in `MGIOKitSupport.c`, matching **`IONetworkController`** after checking
+  `IODeviceTree:/chosen` and sdio/wlan/marconi-wifi nodes, i.e. MobileGestalt wants the **Wi-Fi MAC**.
+  The D22AP tree has `/chosen mac-address-wifi0/bluetooth0/ethernet0/ethernet1` (iBoot fills
+  them); our ADT had none. **0088m**: fajita ADT gains synthetic locally administered MACs
+  02:66:6a:00:00:01..04 (sweet ADT unchanged).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

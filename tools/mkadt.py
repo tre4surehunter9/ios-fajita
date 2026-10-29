@@ -67,7 +67,14 @@ BOARDS = {
         # to alloc-ranges below 4 GiB. Same size as sweet's high range.
         mem=(0x100000000, 0xfcc00000),
         # ufshc@1d84000, same host as sweet; the driver looks up "userdata" by GPT name.
-        ufs=True),
+        ufs=True,
+        # iBoot fills /chosen mac-address-* (the D22AP template has wifi0,
+        # bluetooth0, ethernet0/1). Without them MobileGestalt's unique-ID
+        # path waits forever for a Wi-Fi IONetworkController (MGIOKitSupport.c),
+        # which blocks lsd's first-boot database seed and so SpringBoard.
+        # Synthetic, locally administered unicast addresses ("fj" + n).
+        macs={'wifi0': '02:66:6a:00:00:01', 'bluetooth0': '02:66:6a:00:00:02',
+              'ethernet0': '02:66:6a:00:00:03', 'ethernet1': '02:66:6a:00:00:04'}),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -108,6 +115,8 @@ def node(name, props=(), children=()):
 def build(seed=None, qemu=False, highmem=False, board='sweet'):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     b = BOARDS[board]
+    macs = [(f'mac-address-{k}', bytes.fromhex(v.replace(':', '')))
+            for k, v in b.get('macs', {}).items()]
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     if b['mem'] and not qemu:
         phys_base, mem_size = b['mem']
@@ -155,7 +164,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
         ('effective-production-status-ap', u32(0)),
         ('certificate-security-mode', u32(1)),
         ('effective-security-mode-sep', u32(1)),
-    ], [node('memory-map', [ph()]),
+    ] + macs, [node('memory-map', [ph()]),
         # Local boot policy (kern_csr.c): SIP relaxed like `csrutil disable`
         # (lp-sip0: untrusted kexts, unrestricted FS, task_for_pid, kernel
         # debugger, dtrace, nvram), lp-sip1: unauthenticated (unsealed) root.
