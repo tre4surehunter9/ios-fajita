@@ -19,7 +19,7 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
 | 3 | ADT `--board fajita`: framebuffer, CPUs, high-memory range `0x100000000`+`0xfcc00000`, no UFS node | me | done |
 | 4 | Read-only dump from Sailfish: live FDT, `/proc/iomem`, `/proc/cmdline`, current boot image (for the stock DTBs and header) | user | done 2026-10-28 (`dtb/fajita/`, not in git) |
 | 5 | `fastboot boot` the probe image: tests `fastboot boot` support, framebuffer, continuous scanout, PSCI, GIC timer, SMP, memory map | user | **done 2026-10-28**: `fastboot boot` OKAY; red probe screen, heartbeat counting |
-| 6 | XNU boot: `cpus=1`, every sweet driver off, no root device. Success = kernel console on screen, ending at "waiting for root device" | user | after 4, 5 and CI |
+| 6 | XNU boot: `cpus=1`, every sweet driver off, no root device. Success = kernel console on screen, ending at "waiting for root device" | user | **done 2026-10-28** (image `shim-boot-0083e.img`) |
 
 ## Boot log
 
@@ -34,7 +34,14 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
   then shows `dlil_init: Waiting for all the created dlil kernel threads to get scheduled
   at least once.` Sweet passed this point. Unknown whether the kernel is stuck or the
   console ring stopped reaching the panel.
-- **0083** (`sweetecon=1`): synchronous console to tell those apart.
+- **0083e** (CI 40801501272 kernel, ADT 0082b, `sweetecon=1`, 2026-10-28): **MILESTONE 1
+  REACHED.** The console wraps (newest at the top). In order: SWEET CPU 1/1 initialized, SGI1
+  verified; MAC framework; SWEET AMFI / Sandbox / HFS registered; mbinit; DLIL SUM16 PASSED;
+  dlil threads scheduled (so the earlier stop was only the screen being stale, and `sweetecon=1`
+  fixes that); Skywalk self-tests all PASSED; `bsd_autoconf: calling kminit`; ifnet lo0/gif0/stf0;
+  `Waiting on <dict>IOProviderClass IOMedia, Content Apple_HFS</dict>`;
+  `Failed to write boot-picker-bringup-reason to NVRAM.` (expected, there is no NVRAM). AppleCLCD
+  reports `1080x2340 stride 4320 at 0x9d400000, presented as 1125x2436`. No panic.
 
 ## Planned: USB live console (after milestone 1)
 
