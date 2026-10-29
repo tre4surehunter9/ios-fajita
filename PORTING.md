@@ -196,6 +196,14 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   `fastboot boot` of test images still works with an image on the active slot. Restore with the
   original `dtb/fajita/boot_a.img` (Sailfish kernel) if ever needed.
 
+- **0089** (CI 40937206039, the user's dispatch from `main`): `fastboot boot` still works with an image
+  flashed to boot_a. **0089d** (`sweetusb=2`, on purpose: the crash puts the log into a RAM dump)
+  → dump mode at 50 s → `logs/ram-0089d.txt`: `SMMU sCR0 0x2d0406 (CLIENTPD 0 USFCFG 1) IDR0
+  0x4c017e4c IDR1 0x5000002d GFSR 0 smr=76 cb=45 page=0x1000 npage=64`, `6 valid SMRs, 0 match
+  stream 0x740`. **Cause of the USB reset confirmed:** ABL removes its USB stream entry; with
+  USFCFG=1 the first DMA is an unidentified-stream fault. **0090**: SMR/S2CR for 0x740 → CB44 with
+  CBAR S1-translate/S2-bypass and SCTLR=0 (mainline arm-smmu-qcom bypass quirk).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

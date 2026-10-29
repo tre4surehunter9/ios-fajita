@@ -1,0 +1,93 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 160cd85..a159ced 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -161,6 +161,77 @@ usb_smmu_report(void)
+ 	    hits ? "" : " (unmatched: sCR0.USFCFG decides bypass/fault)");
+ }
+ 
++/*
++ * Route stream 0x740 like Linux arm-smmu-qcom's bypass quirk (SDM845's
++ * hypervisor turns an S2CR "bypass" into "fault"): the last context bank as
++ * stage-1 translate / stage-2 bypass with SCTLR.M = 0, i.e. untranslated,
++ * and a free SMR/S2CR pair pointing the stream at it. Boot 0089d showed ABL
++ * leaves no entry for 0x740 with sCR0.USFCFG = 1, so the first USB DMA was an
++ * unidentified-stream fault that reset the SoC. sweetusbsmmu=0 skips this.
++ */
++static bool
++usb_smmu_route(void)
++{
++	int enabled = 1;
++	PE_parse_boot_argn("sweetusbsmmu", &enabled, sizeof(enabled));
++	if (!enabled) {
++		printf("SWEET USB: SMMU routing skipped (sweetusbsmmu=0)\n");
++		return false;
++	}
++	vm_offset_t smmu = ml_io_map(SMMU_PA, SMMU_SIZE);
++	if (smmu == 0) {
++		return false;
++	}
++	uint32_t idr0 = usb_rd(smmu, 0x20), idr1 = usb_rd(smmu, 0x24);
++	unsigned nsmr = idr0 & 0xffu, ncb = idr1 & 0xffu;
++	uint32_t page = (idr1 & (1u << 31)) ? 0x10000u : 0x1000u;
++	uint32_t npage = 1u << (((idr1 >> 28) & 7u) + 1u);
++	if (nsmr == 0 || nsmr > 128 || ncb == 0 || ncb > 128 ||
++	    (uint64_t)page * npage * 2 > SMMU_SIZE) {
++		printf("SWEET USB: SMMU geometry unexpected; not routing\n");
++		return false;
++	}
++	unsigned cb = ncb - 1, slot = nsmr;
++	for (unsigned i = 0; i < nsmr; i++) {
++		uint32_t smr = usb_rd(smmu, 0x800 + 4 * i);
++		if (!(smr & (1u << 31))) {
++			if (slot == nsmr) {
++				slot = i;
++			}
++			continue;
++		}
++		uint32_t id = smr & 0x7fffu, mask = (smr >> 16) & 0x7fffu;
++		if (!((USB_SID ^ id) & ~mask & 0x7fffu)) {
++			printf("SWEET USB: SMMU stream %#x already routed (SMR%u); leaving it\n", USB_SID, i);
++			return true;
++		}
++		uint32_t s2cr = usb_rd(smmu, 0xc00 + 4 * i);
++		if (((s2cr >> 16) & 3u) == 0 && (s2cr & 0xffu) == cb) {
++			printf("SWEET USB: SMMU CB%u in use by SMR%u; not routing\n", cb, i);
++			return false;
++		}
++	}
++	vm_offset_t c = smmu + (vm_offset_t)npage * page + (vm_offset_t)cb * page;
++	if (slot == nsmr || (usb_rd(c, 0x0) & 1u)) {
++		printf("SWEET USB: SMMU no free SMR (%u) or CB%u enabled (SCTLR %#x); not routing\n",
++		    slot, cb, usb_rd(c, 0x0));
++		return false;
++	}
++	/* Context bank: S1 translate / S2 bypass (CBAR TYPE 1), translation off. */
++	*(volatile uint32_t *)(c + 0x0) = 0;
++	*(volatile uint32_t *)(smmu + page + 4 * cb) = 1u << 16;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	/* S2CR before SMR, as Linux arm_smmu_write_sme(): never a valid SMR without its S2CR. */
++	*(volatile uint32_t *)(smmu + 0xc00 + 4 * slot) = cb;		/* TYPE 0 translate, CBNDX */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(smmu + 0x800 + 4 * slot) = (1u << 31) | USB_SID;	/* VALID, mask 0 */
++	__asm__ volatile ("dsb sy" ::: "memory");
++	printf("SWEET USB: SMMU routed stream %#x: SMR%u %#x S2CR %#x -> CB%u CBAR %#x SCTLR %#x GFSR %#x\n",
++	    USB_SID, slot, usb_rd(smmu, 0x800 + 4 * slot), usb_rd(smmu, 0xc00 + 4 * slot), cb,
++	    usb_rd(smmu, page + 4 * cb), usb_rd(c, 0x0), usb_rd(smmu, 0x48));
++	return (usb_rd(smmu, 0x800 + 4 * slot) & (1u << 31)) != 0;
++}
++
+ #define DWC3_PA                 0x0a600000
+ #define DWC3_SIZE               0x0000d000
+ #define QUSB2_PA                0x088e2000
+@@ -253,6 +324,10 @@ sweet_usb_probe(void)
+ 	}
+ 	if (sweet_board_is("oneplus,fajita")) {
+ 		usb_smmu_report();
++		if (enabled >= 2 && !usb_smmu_route()) {
++			printf("SWEET USB: no SMMU route for the controller; USB device not started\n");
++			return;
++		}
+ 	}
+ 	if (enabled >= 2) {
+ 		sweet_usb_gadget_start(dwc);
