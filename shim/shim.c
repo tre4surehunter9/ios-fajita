@@ -11,8 +11,8 @@
 #include "mmu.h"
 #include "loader.h"
 #include "ufs.h"
+#include "fdt.h"
 
-#define IMEM_RESTART_REASON	0x146aa65cUL	/* qcom,msm-imem restart_reason@65c */
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x0c264000UL
 
@@ -106,7 +106,8 @@ static void __attribute__((noreturn)) reset(unsigned after_s)
 	con_skip();
 	con_str("RESET", after_s > 20 ? "in 40s" : "in 20s");
 	delay_ms(after_s * 1000);
-	wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
+	if (IMEM_RESTART_REASON)
+		wr32(IMEM_RESTART_REASON, RESTART_BOOTLOADER);
 	__asm__ volatile("dsb sy" ::: "memory");
 	smc(PSCI_SYSTEM_RESET, 0, 0, 0);
 	wr32(PSHOLD, 0);
@@ -347,6 +348,55 @@ static void __attribute__((unused)) psci_line(const char *label, uint64_t fn)
 	con_hex2(label, "feat=", smc(PSCI_FEATURES, fn, 0, 0), 0, 0);
 }
 
+#if defined(BOARD_FAJITA)
+/*
+ * fajita first boot without a payload: report what the XNU port depends on,
+ * touching nothing but the framebuffer, GIC/timer, PSCI and the secondary
+ * cores. No UFS, no IMEM, no PMIC. Then keep the screen alive with a
+ * once-per-second heartbeat: if the counter stops at 0 or the screen never
+ * changes from the splash, the panel is not being refreshed from memory.
+ */
+static void __attribute__((noreturn)) fajita_probe(uint64_t dtb)
+{
+	uint64_t base[8], size[8], v;
+
+	stage = "probe";
+	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
+	int n = fdt_memory_ranges(dtb, base, size, 8);
+	con_hex2("MEMORY", "nodes/ranges=", n, 0, 0);
+	for (int i = 0; i < n && i < 8; i++)
+		con_range(" ram", base[i], size[i]);
+	if (fdt_chosen_u64(dtb, "linux,initrd-start", &v))
+		con_hex2("INITRD", "lo=", v, "hi=", fdt_chosen_u64(dtb, "linux,initrd-end", &v) ? v : 0);
+	con_skip();
+
+	con_hex2("MIDR", "=", rsr("midr_el1"), "EL=", rsr("currentel") >> 2);
+	con_hex2("MPIDR", "=", rsr("mpidr_el1"), "tg16=", (rsr("id_aa64mmfr0_el1") >> 20) & 0xf);
+	con_hex2("TIMER", "hz=", rsr("cntfrq_el0"), "pa=", rsr("id_aa64mmfr0_el1") & 0xf);
+	con_hex2("PSCI", "ver=", smc(PSCI_VERSION, 0, 0, 0), "smccc=", smc(SMCCC_VERSION, 0, 0, 0));
+	psci_line("CPU_ON", PSCI_CPU_ON);
+	psci_line("RESET", PSCI_SYSTEM_RESET);
+	psci_line("RESET2", PSCI_SYSTEM_RESET2);
+	con_skip();
+
+	test_smp();
+	test_gic();
+	con_skip();
+
+	stage = "heartbeat";
+	int hb_row = con_get_row();
+	for (uint32_t sec = 0;; sec++) {
+		con_set_row(hb_row);
+		con_hex2("ALIVE", "s=", sec, 0, 0);
+		uint32_t c = (sec & 1) ? GREEN : BLUE;
+		for (int y = FB_H - 160; y < FB_H - 40; y++)
+			for (int x = FB_W - 160; x < FB_W - 40; x++)
+				con_fb[y * (FB_STRIDE / 4) + x] = c;
+		delay_ms(1000);
+	}
+}
+#endif
+
 static uint64_t scratch[8192];	/* 64KB, lives in our (later cacheable) image */
 
 static uint64_t ticks_fill(uint32_t c)
@@ -377,11 +427,14 @@ void shim_main(uint64_t dtb)
 	/* An xnu payload in the ramdisk means: boot it (MMU stays off). */
 	stage = "loader";
 	con_clear(RED);
-	con_str("SHIM", "sweet milestone 4: xnu loader");
+	con_str("SHIM", BOARD_NAME ": xnu loader");
 	con_skip();
 	const char *why = loader_boot(dtb);
 	con_str("LOADER", why);
 	con_skip();
+#if defined(BOARD_FAJITA)
+	fajita_probe(dtb);
+#endif
 
 	/* No payload: probe the internal UFS while the MMU is still off. */
 	stage = "ufs";

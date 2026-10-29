@@ -66,6 +66,16 @@ void con_skip(void)
 	row++;
 }
 
+int con_get_row(void)
+{
+	return row;
+}
+
+void con_set_row(int r)
+{
+	row = r;
+}
+
 void con_str(const char *label, const char *s)
 {
 	put_str(0, label, YELLOW);
@@ -93,5 +103,18 @@ void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint
 		fmt_hex(buf, vb, 8);
 		put_str(col, buf, WHITE);
 	}
+	row++;
+}
+
+void con_range(const char *label, uint64_t base, uint64_t size)
+{
+	char buf[17];
+	int col = put_str(0, label, YELLOW);
+	col = col < LABEL_COLS ? LABEL_COLS : col + 1;
+	fmt_hex(buf, base, 16);
+	col = put_str(col, buf, WHITE);
+	col = put_str(col, "+", YELLOW);
+	fmt_hex(buf, size, 16);
+	put_str(col, buf, WHITE);
 	row++;
 }

@@ -82,3 +82,65 @@ int fdt_chosen_u64(uintptr_t fdt, const char *prop, uint64_t *out)
 		}
 	}
 }
+
+static int is_memory_node(const char *name)
+{
+	static const char m[] = "memory";
+	for (int i = 0; i < 6; i++)
+		if (name[i] != m[i])
+			return 0;
+	return name[6] == 0 || name[6] == '@';
+}
+
+static uint64_t cells(uintptr_t p, uint32_t n)
+{
+	return n == 2 ? (uint64_t)be32(p) << 32 | be32(p + 4) : be32(p);
+}
+
+int fdt_memory_ranges(uintptr_t fdt, uint64_t *base, uint64_t *size, int max)
+{
+	if (!fdt || be32(fdt) != FDT_MAGIC)
+		return 0;
+	uintptr_t p = fdt + be32(fdt + 8);
+	uintptr_t strings = fdt + be32(fdt + 12);
+	uint32_t ac = 2, sc = 2;	/* root #address-cells/#size-cells, read below */
+	int depth = 0, in_mem = 0, n = 0;
+
+	for (;;) {
+		uint32_t tok = be32(p);
+		p += 4;
+		switch (tok) {
+		case FDT_BEGIN_NODE:
+			depth++;
+			in_mem = depth == 2 && is_memory_node((const char *)p);
+			p = align4(skip_str(p));
+			break;
+		case FDT_END_NODE:
+			in_mem = 0;
+			if (--depth == 0)
+				return n;
+			break;
+		case FDT_PROP: {
+			uint32_t len = be32(p), nameoff = be32(p + 4);
+			const char *name = (const char *)(strings + nameoff);
+			uintptr_t val = p + 8;
+			if (depth == 1 && len == 4 && streq(name, "#address-cells"))
+				ac = be32(val);
+			else if (depth == 1 && len == 4 && streq(name, "#size-cells"))
+				sc = be32(val);
+			else if (in_mem && streq(name, "reg") && (ac == 1 || ac == 2) && (sc == 1 || sc == 2))
+				for (uint32_t off = 0; off + 4 * (ac + sc) <= len; off += 4 * (ac + sc), n++)
+					if (n < max) {
+						base[n] = cells(val + off, ac);
+						size[n] = cells(val + off + 4 * ac, sc);
+					}
+			p = align4(val + len);
+			break;
+		}
+		case FDT_NOP:
+			break;
+		default:
+			return n;
+		}
+	}
+}

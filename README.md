@@ -186,6 +186,7 @@ Not in git: partition backups, live device trees, recovery images, Apple firmwar
 | 0066–0067 | Fault-region crash info; console mute |
 | 0068 | IOSurface lookup semantics for already-mapped surfaces |
 | 0069 | Batched persistent-log flushes |
+| 0082 | Early console takes the framebuffer from `boot_args.Video` (needed for the OnePlus 6T port, see `PORTING.md`) |
 
 ## Key hardware facts
 
