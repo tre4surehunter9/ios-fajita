@@ -261,6 +261,10 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   "tre4surehunter9/ios-fajita" at the user's request (MobileGestalt may serve the old value from its
   cache).
 
+- **2026-10-29: `boot_a` now holds `shim-boot-0092a.img`** (kernel 0092, ADT with MACs + About values,
+  `sweetusb=2` USB console, `sweetiokitd=20`, console muted). The user approved the flash. Restore with
+  `dtb/fajita/boot_a.img` (Sailfish) or any earlier shim image.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
