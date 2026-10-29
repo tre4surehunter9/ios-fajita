@@ -217,6 +217,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   **Some IOService never stops being busy**, so the registry never goes quiet. **0091** adds
   `sweetbusy=N` to name the busy services.
 
+- About is a **stall, not a freeze**: in 0090p samples 1-2 the main thread was still in the quiesce
+  wait; at sample 3 it was idle, so the page loaded after 2-4 min. assetsd crashed (sig 6) in the
+  same boot (not yet looked at).
+- **User decision (2026-10-29):** no changes to About-page values (model name, serial, ...) until
+  at least GPU acceleration works.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
