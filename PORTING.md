@@ -63,6 +63,16 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   `qcom,select-utmi-as-pipe-clk`). The first step is sweet's read-only probe
   (0072) with fajita offsets.
 
+- **0084u** (CI 40803175177, ADT with UFS + D22AP `/product`, `rd=ufsroot0` read-only,
+  `sweetusb=2 sweetecon=1`, 2026-10-28): **UFS reads work.** The kernel finds `userdata` as
+  `ufsroot0` and reads it. HFS reports `unknown Volume Signature` (Sailfish ext4, expected),
+  `mount(0..9) failed`. USB: the phone drops off the host when it leaves fastboot and never
+  re-enumerates. The kernel prints `SWEET USB: endpoint 0 setup failed`; the QUSB2 reads are
+  byte-replicated (`PLL_STATUS 0x64646464`, `PWR_CTRL1 0x23232323`, `PORT_TUNE1 0x55555555`,
+  `TEST1 0x90909090`), suspicious. The earlier lines (GDSC/clocks/soft reset/ep0 status)
+  scrolled off. Unlike edi194 (flashed boot, USB GDSC off), after `fastboot boot` the USB
+  block is still powered.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

@@ -9,3 +9,4 @@ shim/out-fajita/
 xnu/out/
 xnu/out-*/
 __pycache__/
+logs/
