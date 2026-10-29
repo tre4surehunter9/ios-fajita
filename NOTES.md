@@ -2,13 +2,28 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### fajita (OnePlus 6T) port, branch `fajita` (2026-10-28)
+### fajita (OnePlus 6T) port, branch `fajita` (handoff 2026-10-28 late)
 
-Separate board next to sweet; state, plan and hardware facts are in `PORTING.md`.
-Patch 0082 (framebuffer from boot_args) changes no sweet behaviour: sweet's shim
-passes the same 0x9c000000 1080x2400 geometry it always did. Built in CI and booted on fajita
-(milestone 1, kernel waiting for root, 2026-10-28); milestone 2 (UFS root, launchd and
-daemons running) the same evening with patches 0084-0086. Not re-booted on sweet.
+Details, boot log and hardware facts: `PORTING.md`. State:
+- **Done:** kernel to framebuffer (0082/0083); UFS root on `userdata` (image v1 flashed,
+  Sailfish gone); launchd + daemons; 8 CPUs (`cpus=8`); keys (0087); touch RMI4 (0088,
+  `sweettouch=1 sweettouchdelay=60`). Patches 0082-0088 change no sweet behaviour (board picked
+  from the ADT compatible `oneplus,fajita`); not re-booted on sweet.
+- **Blocked:** (1) GUI stays on the Apple logo: SpringBoard waits in
+  `__LAUNCH_SERVICES_IS_RESEEDING_ITS_DATABASE_AND_MAY_BLOCK__` (sync XPC to lsd), first boot
+  of a fresh root. (2) USB device start (`sweetusb=2`) resets the SoC into Qualcomm dump mode
+  (`05c6:900e`) right after the DWC3 soft reset, even with the DMA window in low memory (0086);
+  boot with `sweetusb=1`.
+- **Next:** boot `shim/out-fajita/shim-boot-0088l.img` (0088t + `sweetsample=SpringBoard,lsd`),
+  photograph `SMP lsd ...` stacks, symbolicate with `tools/dsc-a2s.py` (see PORTING.md), and look
+  for `CRASH lsd`. Let one boot run long in case lsd just needs time; the database then
+  persists on userdata.
+- **Debug channels:** screen (`sweetecon=1`, no `sweetfb_noconsole`); RAM dump on any SoC reset:
+  `work/tools/qdl/build/qdl ramdump --debug -o DIR 'DDRCS0_1,...'` then `tools/sweet-ramlog.py`
+  (one shot: qdl resets the phone afterwards).
+- Phone workflow: user runs everything except `fastboot boot` of prepared images. Holding
+  Vol Up + Power gives fastboot. After a big flash the first `fastboot boot` hangs at "Sending":
+  re-enter fastboot by hand.
 
 ### >>> UPDATE 2026-10-18 (read first, then the 10-17 handoff below) <<<
 
