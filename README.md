@@ -188,6 +188,7 @@ Not in git: partition backups, live device trees, recovery images, Apple firmwar
 | 0069 | Batched persistent-log flushes |
 | 0082 | Early console takes the framebuffer from `boot_args.Video` (needed for the OnePlus 6T port, see `PORTING.md`) |
 | 0083 | `sweetecon=1`: synchronous console straight to the screen, bypassing the console ring |
+| 0084 | USB console on fajita: SDM845 USB clock offsets, chosen from the ADT; USB also starts when UFS init fails |
 
 ## Key hardware facts
 

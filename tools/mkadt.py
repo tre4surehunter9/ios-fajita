@@ -66,8 +66,8 @@ BOARDS = {
         # every fixed reserved-memory region below 4 GiB, dynamic pools limited
         # to alloc-ranges below 4 GiB. Same size as sweet's high range.
         mem=(0x100000000, 0xfcc00000),
-        # No UFS node until the UFS milestone: the kernel cannot touch the disk.
-        ufs=False),
+        # ufshc@1d84000, same host as sweet; the driver looks up "userdata" by GPT name.
+        ufs=True),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()

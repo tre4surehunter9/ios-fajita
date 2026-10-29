@@ -1,0 +1,112 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6b926fe..ee135ce 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -814,6 +814,9 @@ sweet_ufs_rootdev(dev_t *dev)
+ 	if (!su.ready) {
+ 		int error = sweet_ufs_init();
+ 		if (error) {
++			/* Keep the USB live log available to debug the UFS failure. */
++			printf("SWEET UFS: init failed (%d)\n", error);
++			sweet_usb_probe();
+ 			return error;
+ 		}
+ 	}
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index b6c1a41..1bf2299 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -36,6 +36,7 @@
+ #include <net/if_media.h>
+ #include <net/dlil.h>
+ #include <sys/kern_event.h>
++#include <pexpert/device_tree.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ void sweet_usb_probe(void);
+@@ -47,10 +48,13 @@ extern ppnum_t pmap_find_phys(pmap_t pmap, addr64_t va);
+ #define GCC_USB30_PRIM_GDSCR    0x0f004         /* bit 31: power on */
+ #define CBCR_CLK_OFF            (1u << 31)
+ 
+-static const struct {
++struct usb_clk {
+ 	const char *name;
+ 	uint32_t    off;
+-} usb_cbcr[] = {
++};
++
++/* Order matters: [0] master, [3] cfg-noc-axi and [5] ahb2phy gate the reads below. */
++static const struct usb_clk usb_cbcr_sm7150[] = {
+ 	{ "master", 0x0f010 },
+ 	{ "sleep", 0x0f014 },
+ 	{ "utmi", 0x0f018 },
+@@ -60,6 +64,40 @@ static const struct {
+ 	{ "clkref", 0x8c010 },
+ };
+ 
++/* fajita (SDM845), Linux drivers/clk/qcom/gcc-sdm845.c halt_reg values */
++static const struct usb_clk usb_cbcr_sdm845[] = {
++	{ "master", 0x0f00c },
++	{ "sleep", 0x0f010 },
++	{ "utmi", 0x0f014 },
++	{ "cfg-noc-axi", 0x0502c },
++	{ "aggre-axi", 0x8201c },
++	{ "ahb2phy", 0x6a004 },
++	{ "clkref", 0x8c008 },
++};
++
++#define USB_NCLK (sizeof(usb_cbcr_sm7150) / sizeof(usb_cbcr_sm7150[0]))
++_Static_assert(sizeof(usb_cbcr_sdm845) == sizeof(usb_cbcr_sm7150), "clock tables");
++
++/* The ADT root compatible names the board (tools/mkadt.py). */
++static bool
++usb_board_is(const char *want)
++{
++	DTEntry root;
++	const char *compat;
++	unsigned int size;
++
++	if (SecureDTLookupEntry(NULL, "/", &root) != kSuccess ||
++	    SecureDTGetProperty(root, "compatible", (const void **)&compat, &size) != kSuccess) {
++		return false;
++	}
++	for (unsigned int i = 0; i < size; i += strnlen(compat + i, size - i) + 1) {
++		if (strncmp(compat + i, want, size - i) == 0) {
++			return true;
++		}
++	}
++	return false;
++}
++
+ #define DWC3_PA                 0x0a600000
+ #define DWC3_SIZE               0x0000d000
+ #define QUSB2_PA                0x088e2000
+@@ -76,10 +114,18 @@ usb_rd(vm_offset_t base, uint32_t off)
+ void
+ sweet_usb_probe(void)
+ {
++	static bool probed;
+ 	int enabled = 1;
+-	uint32_t gdscr, cbcr[sizeof(usb_cbcr) / sizeof(usb_cbcr[0])];
++	uint32_t gdscr, cbcr[USB_NCLK];
+ 	bool clocks_on = true;
+ 
++	/* Called after UFS init and, on fajita, also when UFS init fails. */
++	if (probed) {
++		return;
++	}
++	probed = true;
++	const struct usb_clk *usb_cbcr = usb_board_is("oneplus,fajita") ? usb_cbcr_sdm845 : usb_cbcr_sm7150;
++
+ 	/* sweetusb=0 off, 1 (default) report state only, 2 also start the USB device */
+ 	PE_parse_boot_argn("sweetusb", &enabled, sizeof(enabled));
+ 	if (!enabled) {
+@@ -92,7 +138,7 @@ sweet_usb_probe(void)
+ 	}
+ 	gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
+ 	printf("SWEET USB: GDSC usb30_prim 0x%08x (%s)\n", gdscr, (gdscr & (1u << 31)) ? "on" : "off");
+-	for (unsigned i = 0; i < sizeof(usb_cbcr) / sizeof(usb_cbcr[0]); i++) {
++	for (unsigned i = 0; i < USB_NCLK; i++) {
+ 		cbcr[i] = usb_rd(gcc, usb_cbcr[i].off);
+ 		printf("SWEET USB: clk %-12s CBCR 0x%08x (%s)\n", usb_cbcr[i].name, cbcr[i],
+ 		    (cbcr[i] & CBCR_CLK_OFF) ? "off" : "on");
