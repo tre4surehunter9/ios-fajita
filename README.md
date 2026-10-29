@@ -191,6 +191,7 @@ Not in git: partition backups, live device trees, recovery images, Apple firmwar
 | 0084 | USB console on fajita: SDM845 USB clock offsets, chosen from the ADT; USB also starts when UFS init fails |
 | 0085 | Power the QUSB2 PHY back up when the bootloader left it powered down (fajita after `fastboot boot`) |
 | 0086 | USB DMA in a fixed low-memory window (`sweetusbdma=`, fajita default `0x99800000`) |
+| 0087 | fajita keys: PM8998 power (PON), volume up/down (GPIO6/GPIO5) |
 
 ## Key hardware facts
 
