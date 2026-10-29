@@ -23,6 +23,11 @@ screen (image versions v8-v14 in NOTES.md):
                   kills), no cloud-configuration UI
   Setup           skipped: SetupDone, SetupFinishedAllSteps, SetupVersion 11,
                   mini-buddy flags off
+  InterfaceNamer  WaitStackTimeout / WaitQuietTimeout 5 s: without Apple's
+                  IONetworkStack (IONetworkingFamily) configd's InterfaceNamer
+                  never posts *QUIET* and only times out after 300 s;
+                  SCNetworkInterfaceCopyAll (Settings → About, Ethernet
+                  checks) blocks until then
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
@@ -122,6 +127,22 @@ def audio(root):
         print('StartRecorderServer off', os.path.relpath(conf, root))
 
 
+def interface_namer(root):
+    """configd-1241 ifnamer.c: quietCallback() needs the IONetworkStack user
+    client before it publishes *QUIET*; otherwise *TIMEOUT* comes after
+    WaitStackTimeout (default 300 s), read from this bundle's Info.plist."""
+    path = os.path.join(root, 'System/Library/SystemConfiguration/InterfaceNamer.bundle/Info.plist')
+    st = os.stat(path)
+    with open(path, 'rb') as f:
+        raw = f.read()
+    fmt = plistlib.FMT_BINARY if raw.startswith(b'bplist') else plistlib.FMT_XML
+    plist = plistlib.loads(raw)
+    plist['WaitStackTimeout'] = 5.0
+    plist['WaitQuietTimeout'] = 5.0
+    save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777, fmt)
+    print('InterfaceNamer: WaitStackTimeout/WaitQuietTimeout 5 s')
+
+
 def main():
     if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
         sys.exit(__doc__)
@@ -130,6 +151,7 @@ def main():
     containers(root)
     activation(root)
     audio(root)
+    interface_namer(root)
     merge_pref(root, 'com.apple.migration', {
         'LastSystemVersion': BUILD,
         'DMUserDataDisposition': {'SyntheticDidUpgrade': False, 'buildVersion': BUILD}})

@@ -241,6 +241,14 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   `*QUIET*`, `*COMPLETE*` or `*TIMEOUT*`, so the stall is InterfaceNamer's timeout. driverkitd is killed
   (sig 9) once deferred matching starts. Next: `sweetsample=configd,Preferences` (image 0092s).
 
+- **About stall root cause (configd-1241.140.6 `Plugins/InterfaceNamer/ifnamer.c`):** 0092s showed every
+  configd thread idle in its run loop. `quietCallback()` returns early ("No network stack object")
+  while there is no `IONetworkStack` user client (Apple's IONetworkingFamily, absent here), so
+  `*QUIET*` is never published. `*TIMEOUT*` comes after `WaitStackTimeout` (default 300 s), read from
+  `InterfaceNamer.bundle/Info.plist`. **Fix:** `tools/sweet-root-tweaks.py` sets
+  WaitStackTimeout/WaitQuietTimeout = 5 s; needs root image v2 (`work/update-root.sh`) and a
+  userdata reflash. 0092 stays (the registry root really was busy forever).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
