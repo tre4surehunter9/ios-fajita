@@ -134,6 +134,11 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   the `8/8 CPUs initialized` line is not yet seen. launchd boot tasks run (mount-phase-1/2,
   data-protection, keybag, usermanagerd, init_featureflags, dirs_cleaner).
 
+- 0087s later: **Apple logo shown** (backboardd drew), then SpringBoard and backboardd running
+  (SMP sampler stacks of both). bluetoothd / fairplayd.H2 relaunch constantly, which is expected
+  without hardware (same as sweet). The kernel console kept drawing over the GUI because
+  `sweetfb_noconsole=1` was missing. **0087g** = 0087s + `sweetfb_noconsole=1 sweetfb_hz=30`.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
