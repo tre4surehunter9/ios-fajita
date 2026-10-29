@@ -80,7 +80,7 @@ BOARDS = {
         # region-info (iBoot fills both from syscfg Mod#/Regn). Serial number
         # deliberately absent (blank). Identity (iPhone10,3 / D22AP) unchanged.
         product_name='OnePlus 6T',
-        model_number='https://github.com/tre4surehunter9/ios-fajita',
+        model_number='tre4surehunter9/ios-fajita',
         region_info=''),
 }
 

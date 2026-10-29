@@ -23,7 +23,7 @@ As of **2026-10-29** the OnePlus 6T boots to the **iOS lock screen and home scre
 | Storage | UFS host driver (shared with sweet); the iOS root is a journaled HFS+ volume in `userdata`, read/write |
 | iOS userland | Real iPhone X 16.7.16 root filesystem and shared cache; launchd and the system daemons run |
 | Display | Kernel IOSurface + IOMobileFramebuffer services; CoreAnimation renders in software; frames are copied into the bootloader's splash buffer (`0x9d400000`, 1080×2340). Presented to iOS as an iPhone X panel (1125×2436) |
-| GUI | backboardd, SpringBoard, lock screen, home screen, Settings |
+| GUI | backboardd, SpringBoard, lock screen, home screen, Settings (About shows "OnePlus 6T") |
 | Touch | Synaptics RMI4 (S3706B) at I²C `0x20` on QUP wrapper 1 SE4 (`0xa90000`), polled; rail PM8998 L28A voted through RPMh |
 | Buttons | Power (PM8998 PON), volume up/down (PM8998 GPIO6/GPIO5), read over SPMI |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
@@ -32,7 +32,6 @@ As of **2026-10-29** the OnePlus 6T boots to the **iOS lock screen and home scre
 
 ## What does not work (yet)
 
-- **Settings → General → About** freezes Settings (not yet diagnosed).
 - **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS, SEP / Face ID, GPU.** Their daemons start and fail or keep relaunching.
 - **The clock starts at 1970**, so anything that checks certificates fails.
 - **Security is off:** permissive code signing (AMFI) and sandbox policies, a stub AppleKeyStore, no data protection. Do not put anything personal on it.
@@ -203,6 +202,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 - RAM: `0x80000000`+4 GiB and `0x180000000`+`0xfcac0000` on the 8 GB model. Every fixed carve-out is below 4 GiB, so the kernel uses `0x100000000`+`0xfcc00000`.
 - GICv3, virtual timer INTID 19, PSCI over SMC, MPIDR = core << 8: the same as sweet. The kernel needs no changes for these.
 - Panel: Samsung S6E3FC2X01, 1080×2340, DSI command mode. The bootloader leaves it refreshing from `0x9d400000`.
+- configd's InterfaceNamer waits 300 s for Apple's IONetworkStack (absent) before anything can list network interfaces (Settings → About). The root tweaks set its `WaitStackTimeout`/`WaitQuietTimeout` to 5 s. Separately, the macOS-derived kernel config keeps the IORegistry root busy until kernelmanagerd checks in, and iOS has no kernelmanagerd, so patch 0092 stands in for it.
 - MobileGestalt needs `/chosen mac-address-wifi0/bluetooth0/ethernet0/1` in the ADT. Without them it waits forever for a Wi-Fi controller, which blocks the LaunchServices seed and so SpringBoard.
 - USB: DWC3 v3.00a at `0xa600000`, QUSB2 PHY `0x88e2000`; the bootloader powers the PHY down on handoff. The USB stream is `0x740` on the apps SMMU (`0x15000000`).
 

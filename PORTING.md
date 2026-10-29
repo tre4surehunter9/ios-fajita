@@ -255,6 +255,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   untested. MobileGestalt caches answers (sweet saw stale cached identity), so the first boot after
   the v2 reflash is the clean test.
 
+- **Root v2 flashed by the user + `shim-boot-0092a.img` (2026-10-29): Settings → About works and loads
+  promptly** (InterfaceNamer 5 s timeouts + 0092 stand-in), showing Model Name "OnePlus 6T" and the
+  custom model number (the 44-char URL displayed). The model number is now changed to
+  "tre4surehunter9/ios-fajita" at the user's request (MobileGestalt may serve the old value from its
+  cache).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
