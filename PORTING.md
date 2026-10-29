@@ -18,19 +18,19 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
 | 2 | Shim `BOARD=fajita`: framebuffer `0x9d400000` 1080×2340, no IMEM write, header v0 + `Image.gz` + appended DTBs (same layout as the phone's `boot_a`); no-payload **probe mode** | me | built: `shim/out-fajita/shim-boot.img` |
 | 3 | ADT `--board fajita`: framebuffer, CPUs, high-memory range `0x100000000`+`0xfcc00000`, no UFS node | me | done |
 | 4 | Read-only dump from Sailfish: live FDT, `/proc/iomem`, `/proc/cmdline`, current boot image (for the stock DTBs and header) | user | done 2026-10-28 (`dtb/fajita/`, not in git) |
-| 5 | `fastboot boot` the probe image: tests `fastboot boot` support, framebuffer, continuous scanout, PSCI, GIC timer, SMP, memory map | user | waiting |
+| 5 | `fastboot boot` the probe image: tests `fastboot boot` support, framebuffer, continuous scanout, PSCI, GIC timer, SMP, memory map | user | **done 2026-10-28**: `fastboot boot` OKAY; red probe screen, heartbeat counting |
 | 6 | XNU boot: `cpus=1`, every sweet driver off, no root device. Success = kernel console on screen, ending at "waiting for root device" | user | after 4, 5 and CI |
 
 ## Blocked / open
 
-- **`fastboot boot` on the OOS 11 bootloader is unconfirmed.** edi194/ios-fajita reports
+- ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
   `unknown command` on OOS 10/11 and flashes `boot_b` instead. johnpanos/UniXNU-fajita
   reports it works (and that it fails with "Load Error" when the active slot's boot
   partition holds an image). Step 5 settles it. If it fails, the port is blocked by
   our no-flash rule until the user decides otherwise.
 - **Panel refresh.** The panel is a DSI **command-mode** panel ✔ (`msm_drm.dsi_display0=dsi_samsung_s6e3fc2x01_cmd_display`).
   A CPU write to the splash buffer appears only if ABL left MDP auto-refresh on.
-  The probe's once-per-second heartbeat answers this. Unsure.
+  ✔ It does: the probe's heartbeat keeps updating, so ABL leaves the panel refreshing from `0x9d400000`.
 - **Milestone 2 conflict.** Sweet's design puts the iOS root in `userdata`. On this
   phone `userdata` holds Sailfish OS, so a UFS root there erases Sailfish. Needs a
   decision before milestone 2.
