@@ -204,6 +204,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   USFCFG=1 the first DMA is an unidentified-stream fault. **0090**: SMR/S2CR for 0x740 → CB44 with
   CBAR S1-translate/S2-bypass and SCTLR=0 (mainline arm-smmu-qcom bypass quirk).
 
+- **0090u** (CI 40959134894, `sweetusb=2`, 2026-10-29): **USB LIVE CONSOLE WORKS.** `SMMU routed stream
+  0x740: SMR6 0x80000740 S2CR 0x2c -> CB44 CBAR 0x10000 SCTLR 0 GFSR 0`. The host enumerates
+  `1209:0001` 45 s after boot (`enp5s0f0u1`), `ping 192.168.7.2` answers in about 2 ms with 0 % loss,
+  and the console streams to `tools/sweet-usblog.py`. The first 200 USB events are printed (EP3
+  XferComplete `0xc046`, noisy but bounded by the driver's cap).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

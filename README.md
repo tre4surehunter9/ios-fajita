@@ -27,11 +27,11 @@ As of **2026-10-29** the OnePlus 6T boots to the **iOS lock screen and home scre
 | Touch | Synaptics RMI4 (S3706B) at I²C `0x20` on QUP wrapper 1 SE4 (`0xa90000`), polled; rail PM8998 L28A voted through RPMh |
 | Buttons | Power (PM8998 PON), volume up/down (PM8998 GPIO6/GPIO5), read over SPMI |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
-| Debugging | Kernel console on the screen; console ring in RAM, recoverable from Qualcomm's crash-dump mode with a RAM dump; persistent log at the end of `userdata` |
+| USB | Device mode (DWC3) as a CDC-ECM network adapter: phone `192.168.7.2`, PC `192.168.7.1`; the live kernel console streams to the PC over UDP (`sweetusb=2`) |
+| Debugging | Live console over USB; kernel console on the screen; console ring in RAM, recoverable from Qualcomm's crash-dump mode with a RAM dump; persistent log at the end of `userdata` |
 
 ## What does not work (yet)
 
-- **USB console:** starting the USB device controller resets the SoC. The PHY power-up is solved; the next suspect is the apps-SMMU routing of the USB stream (patch 0089 reports it). Boot with `sweetusb=1` until it is fixed.
 - **Settings → General → About** freezes Settings (not yet diagnosed).
 - **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS, SEP / Face ID, GPU.** Their daemons start and fail or keep relaunching.
 - **The clock starts at 1970**, so anything that checks certificates fails.
@@ -131,11 +131,12 @@ The first boot builds the LaunchServices database, which takes a few minutes on 
 | `sweetfb_hz=30` | Panel refresh rate of the CPU copy |
 | `sweettouch=1 sweettouchdelay=60` | Start touch 60 s after the root mounts; `sweetts_stage=1/2` stops after clocks / power, and `sweetts_xraw`/`sweetts_yraw` set the sensor maxima |
 | `sweetkeys=1` | Power and volume keys |
-| `sweetusb=0/1/2` | USB off / report only / start the USB device (fajita: resets the SoC, see above) |
+| `sweetusb=0/1/2` | USB off / report only / USB network + live console log |
 | `sweetsample=Proc1,Proc2` | User stack sampler for those processes (every 2 minutes) |
 
 ## Debugging without a serial port
 
+- **USB live log:** boot with `sweetusb=2`. On the PC, give the phone's USB network interface `192.168.7.1/24`: a NetworkManager profile matched on the phone's host-side MAC `02:00:5e:77:ee:01` does it without sudo, and so does `tools/sweet-usbnet.sh` with sudo. Then run `tools/sweet-usblog.py logs/NAME.txt` (no sudo). The phone sends the last 64 KiB of the console first, then everything new every 100 ms.
 - **Screen:** with `sweetecon=1` and without `sweetfb_noconsole`, the whole kernel console is drawn. It wraps, so the newest line is just above the wrap point.
 - **RAM dump:** when the SoC resets into Qualcomm crash-dump mode (`05c6:900e`), build [linux-msm/qdl](https://github.com/linux-msm/qdl) and run `qdl ramdump --debug -o DIR 'DDRCS0_1'`. Then `tools/sweet-ramlog.py KERNEL PAYLOAD DIR/DDRCS0_1.BIN 0x100000000` rebuilds the console from the kernel's log ring. One shot: qdl resets the phone afterwards.
 - **Symbolication:** mount the SystemOS cryptex read-only with `apfs-fuse`. Then `tools/dsc-a2s.py CACHE_DIR SLIDE ADDR...` resolves sampler and crash addresses to library + symbol, and `tools/dsc-dis.py CACHE_DIR IMAGE OFFSET` disassembles stripped code and resolves the strings it references.
@@ -193,7 +194,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0087 | fajita keys: PM8998 power (PON), volume up/down (GPIO6/GPIO5) |
 | 0088 | fajita touch: Synaptics RMI4, L28A over the SDM845 RPMh mailbox; touch mapping follows the panel height |
 | 0089 | fajita: read-only report of the apps-SMMU routing of the USB stream (0x740) |
-| 0090 | fajita: route the USB stream through a translation-off SMMU context bank (Linux arm-smmu-qcom bypass quirk) |
+| 0090 | fajita: route the USB stream through a translation-off SMMU context bank (Linux arm-smmu-qcom bypass quirk), which makes the USB console work |
 
 ## Key hardware facts (OnePlus 6T)
 
