@@ -101,6 +101,19 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   hold Power + Vol Up + Vol Down ~15 s.
 - **0085n** prepared for the bisect: same as 0085r but `sweetusb=1` (USB report-only, no DMA).
 
+- **RAM dump of the 0085r crash** (`work/ramdump-0085r/`, linux-msm `qdl ramdump`, Sahara memory
+  debug works on this secboot phone; regions OCIMEM, AOP, KMSG, PMIC PON, RST_STAT, DDR
+  0x80000000-0x27fffffff). `tools/sweet-ramlog.py` rebuilds the console from `sweet_log_ring`
+  (PA = VA - virt_base + phys_base, here 0x101c52718) → `logs/ram-0085r.txt` (7148 bytes). It ends:
+  `QUSB2 powered up: PWR_CTRL1 0x22 PLL_STATUS 0x17 (core ready)` (0085 works), ue0 up,
+  `soft reset done after 1 ms`, then nothing. The next step points GEVNTADR at kernel RAM
+  `0x1041b8000` and starts the controller. **The first USB DMA above 4 GiB resets the SoC.**
+  ABL's own event buffer was at `0x99869000`. **0086**: fixed low-bank DMA window `0x99800000`
+  (write-combining, no cache maintenance), boot-arg `sweetusbdma=` to change or `=0` to disable.
+  The UFS root itself mounted read-write (`SWEET UFS: ... read-write`, log at block 0x1d06bfa).
+- How to get a dump: phone in `05c6:900e` → `work/tools/qdl/build/qdl ramdump --debug -o DIR`
+  (one shot: it resets the phone afterwards; the device node is world-writable, no sudo).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

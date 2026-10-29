@@ -1,0 +1,71 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 9ad60e8..2d8f41e 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -310,9 +310,16 @@ dwc_rd(uint32_t off)
+ 	return usb_rd(ud.dwc, off);
+ }
+ 
++/* Set when the DMA area is a fixed low-memory window mapped non-cacheable. */
++static bool ud_dma_uncached;
++
+ static void
+ ud_sync(uint32_t off, uint32_t len)
+ {
++	if (ud_dma_uncached) {
++		__asm__ volatile ("dsb sy" ::: "memory");
++		return;
++	}
+ 	flush_dcache64((addr64_t)(ud.dma_pa + off), len, TRUE);
+ }
+ 
+@@ -913,16 +920,40 @@ sweet_usb_gadget_start(vm_offset_t dwc)
+ 	thread_t thread;
+ 
+ 	ud.dwc = dwc;
+-	if (kmem_alloc_contig(kernel_map, &ud.dma, UD_SIZE, PAGE_MASK, 0, 0,
+-	    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
+-		printf("SWEET USB: no DMA memory\n");
+-		return;
+-	}
+-	ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)ud.dma);
+-	if (!pn) {
+-		return;
++	/*
++	 * fajita: the first controller DMA into kernel RAM above 4 GiB reset
++	 * the SoC into Qualcomm memory-dump mode (RAM log of boot 0085r ends
++	 * right after the soft reset). ABL's own event buffer was at
++	 * 0x99869000, so the path ABL leaves allows DMA to the low bank, which
++	 * this kernel never manages. sweetusbdma=<pa> (fajita default
++	 * 0x99800000, between spss 0x97c00000 and the splash 0x9d400000; free
++	 * after ABL exits) uses that window, mapped write-combining, so no
++	 * cache maintenance is needed. sweetusbdma=0 keeps kernel memory.
++	 */
++	uint64_t fixed_pa = usb_board_is("oneplus,fajita") ? 0x99800000ULL : 0;
++	PE_parse_boot_argn("sweetusbdma", &fixed_pa, sizeof(fixed_pa));
++	if (fixed_pa != 0) {
++		ud.dma = ml_io_map_wcomb((vm_offset_t)fixed_pa, UD_SIZE);
++		if (ud.dma == 0) {
++			printf("SWEET USB: DMA window 0x%llx map failed\n", fixed_pa);
++			return;
++		}
++		bzero((void *)ud.dma, UD_SIZE);
++		ud.dma_pa = fixed_pa;
++		ud_dma_uncached = true;
++	} else {
++		if (kmem_alloc_contig(kernel_map, &ud.dma, UD_SIZE, PAGE_MASK, 0, 0,
++		    KMA_DATA | KMA_ZERO | KMA_PERMANENT, VM_KERN_MEMORY_IOKIT) != KERN_SUCCESS) {
++			printf("SWEET USB: no DMA memory\n");
++			return;
++		}
++		ppnum_t pn = pmap_find_phys(kernel_pmap, (addr64_t)ud.dma);
++		if (!pn) {
++			return;
++		}
++		ud.dma_pa = ptoa_64(pn);
+ 	}
+-	ud.dma_pa = ptoa_64(pn);
++	printf("SWEET USB: DMA area 0x%llx (%s)\n", ud.dma_pa, ud_dma_uncached ? "fixed, uncached" : "kernel RAM");
+ 	ud_if_create();
+ 
+ 	/* Device controller soft reset (PHY and global setup stay as ABL left them). */
