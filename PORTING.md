@@ -180,6 +180,13 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   removed CommCenter, or the HFS capacity crash sweet saw). Next: `sweetsample=Preferences,SpringBoard`
   and symbolicate.
 
+- **Decision (2026-10-29):** once the USB console works, flash a stable image to `boot_a` (user
+  approved in principle; confirm right before). Watch for: A/B retry counter exhaustion (kernel
+  may need to mark the slot successful) and `fastboot boot` possibly refused with an image on the
+  active slot (UniXNU report, unverified here).
+- 2026-10-29: GitHub macOS arm64 runners out of capacity ("job was not acquired by Runner"), so
+  0089 CI runs 40889556591 (x2) and 40895082214 were cancelled before compiling; retrying.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
