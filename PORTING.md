@@ -249,6 +249,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   WaitStackTimeout/WaitQuietTimeout = 5 s; needs root image v2 (`work/update-root.sh`) and a
   userdata reflash. 0092 stays (the registry root really was busy forever).
 
+- **About values (user's choice, 2026-10-29, reverses "wait for GPU"):** Model Name "OnePlus 6T"
+  (`/product product-name/-description`), Model Number "https://github.com/tre4surehunter9/ios-fajita"
+  (root `model-number`, `region-info` empty), serial number blank (no `serial-number`). Fajita ADT only;
+  untested. MobileGestalt caches answers (sweet saw stale cached identity), so the first boot after
+  the v2 reflash is the clean test.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

@@ -74,7 +74,14 @@ BOARDS = {
         # which blocks lsd's first-boot database seed and so SpringBoard.
         # Synthetic, locally administered unicast addresses ("fj" + n).
         macs={'wifi0': '02:66:6a:00:00:01', 'bluetooth0': '02:66:6a:00:00:02',
-              'ethernet0': '02:66:6a:00:00:03', 'ethernet1': '02:66:6a:00:00:04'}),
+              'ethernet0': '02:66:6a:00:00:03', 'ethernet1': '02:66:6a:00:00:04'},
+        # Settings → About (user's choice, 2026-10-29). Model Name is /product
+        # product-name/-description; Model Number is root model-number +
+        # region-info (iBoot fills both from syscfg Mod#/Regn). Serial number
+        # deliberately absent (blank). Identity (iPhone10,3 / D22AP) unchanged.
+        product_name='OnePlus 6T',
+        model_number='https://github.com/tre4surehunter9/ios-fajita',
+        region_info=''),
 }
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
@@ -263,7 +270,12 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
     ])
 
     product_props = d22ap_product()
+    if product_props and b.get('product_name'):
+        product_props = [(k, cstr(b['product_name']) if k in ('product-name', 'product-description') else v)
+                         for k, v in product_props]
     product = [node('product', [ph()] + product_props)] if product_props else []
+    about = [(k, cstr(b[f])) for k, f in (('model-number', 'model_number'), ('region-info', 'region_info'))
+             if b.get(f) is not None]
 
     # Panic log region. /pram reg = <phys size>; it sits just above the
     # dram-size we expose, so XNU maps it but never allocates into it.
@@ -281,7 +293,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + ([] if qemu or not b['ufs'] else [ufs]))
+    ] + about, [chosen, defaults, cpus, arm_io, fbcon, buttons, pram] + product + ([] if qemu or not b['ufs'] else [ufs]))
 
 
 if __name__ == '__main__':
