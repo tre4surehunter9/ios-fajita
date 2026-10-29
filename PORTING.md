@@ -21,6 +21,16 @@ Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
 | 5 | `fastboot boot` the probe image: tests `fastboot boot` support, framebuffer, continuous scanout, PSCI, GIC timer, SMP, memory map | user | **done 2026-10-28**: `fastboot boot` OKAY; red probe screen, heartbeat counting |
 | 6 | XNU boot: `cpus=1`, every sweet driver off, no root device. Success = kernel console on screen, ending at "waiting for root device" | user | after 4, 5 and CI |
 
+## Boot log
+
+- **0082f** (CI 40799749199 kernel, `cpus=1`, drivers off, 2026-10-28): `fastboot boot`
+  of the 17 MB image OK. Console reaches `VM bootstrap done: 85 maps, 165 entries and
+  582 holes left` and shows nothing newer after 2 min. Likely cause: the ADT CPU nodes said
+  only `qcom,kryo385`, but SweetCPU matches `qcom,kryo470`. Without a CPU nub,
+  `kperf_init_early()` waits forever in `ml_wait_max_cpus()`. edi194 hit the same stop.
+  The visible console may lag behind the real stop point.
+- **0082b**: same kernel; the ADT CPU compatible is now `qcom,kryo385`, `qcom,kryo470`.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports

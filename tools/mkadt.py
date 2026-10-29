@@ -48,7 +48,7 @@ BOARDS = {
     'sweet': dict(
         compatible=['xiaomi,sweet', 'qcom,sm7150'],
         fb=(FB, FB_SIZE), fb_h=FB_H,
-        cpu_compatible='qcom,kryo470',
+        cpu_compatible=['qcom,kryo470'],
         # 0-5 Cortex-A55, 6-7 Cortex-A76
         cpu_hz=lambda core: 2304000000 if core >= 6 else 1804800000,
         mem=None, ufs=True),
@@ -57,7 +57,9 @@ BOARDS = {
         compatible=['oneplus,fajita', 'xiaomi,sweet', 'qcom,sdm845'],
         # mainline sdm845-oneplus-common.dtsi cont_splash_mem, fajita.dts height
         fb=(0x9d400000, 0x02400000), fb_h=2340,
-        cpu_compatible='qcom,kryo385',
+        # SweetCPU (patch 0018) matches IONameMatch 'qcom,kryo470'; without it no
+        # CPU nub starts and kperf_init_early() waits forever in ml_wait_max_cpus().
+        cpu_compatible=['qcom,kryo385', 'qcom,kryo470'],
         # 0-3 Cortex-A55 1.766 GHz, 4-7 Cortex-A75 2.803 GHz (mainline OPP tables)
         cpu_hz=lambda core: 2803200000 if core >= 4 else 1766400000,
         # Upper DDR bank. Live FDT (8 GB phone): RAM 0x80000000-0x27cabffff,
@@ -170,7 +172,7 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
         cpu_nodes.append(node(f'cpu{core}', [
             ph(),
             ('device_type', cstr('cpu')),
-            ('compatible', cstr(b['cpu_compatible']) + cstr('ARM,v8')),
+            ('compatible', b''.join(map(cstr, b['cpu_compatible'])) + cstr('ARM,v8')),
             ('reg', u32(core << 8)),  # actual MPIDR Aff1:Aff0, NOT logical ID
             ('cpu-id', u32(core)),   # descriptive: XNU assigns IDs by DT order
             ('cluster-id', u32(0)),  # descriptive; see ml_parse_cpu_topology
