@@ -9,7 +9,10 @@ Details, boot log and hardware facts: `PORTING.md`. State:
   Sailfish gone); launchd + daemons; 8 CPUs (`cpus=8`); keys (0087); touch RMI4 (0088,
   `sweettouch=1 sweettouchdelay=60`). Patches 0082-0088 change no sweet behaviour (board picked
   from the ADT compatible `oneplus,fajita`); not re-booted on sweet.
-- **Blocked:** (1) GUI stays on the Apple logo: SpringBoard waits in
+- **2026-10-29: iOS GUI works** (`shim/out-fajita/shim-boot-0088q.img`): the GUI unblocked once
+  the ADT got `/chosen mac-address-*` (MobileGestalt waited for Wi-Fi otherwise). Open: Settings →
+  About freezes; USB console resets the SoC.
+- **Was blocked (fixed 2026-10-29):** (1) GUI stays on the Apple logo: SpringBoard waits in
   `__LAUNCH_SERVICES_IS_RESEEDING_ITS_DATABASE_AND_MAY_BLOCK__` (sync XPC to lsd), first boot
   of a fresh root. (2) USB device start (`sweetusb=2`) resets the SoC into Qualcomm dump mode
   (`05c6:900e`) right after the DWC3 soft reset, even with the DMA window in low memory (0086);

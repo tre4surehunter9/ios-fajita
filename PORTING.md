@@ -174,6 +174,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   unblocked MobileGestalt → lsd seed → SpringBoard. **0088q** = 0088m + `sweetfb_noconsole=1`
   (console muted over the GUI; still in the log ring, panics still drawn); the current daily image.
 
+- **0088q** (2026-10-29): **MILESTONE 4: iOS GUI usable on fajita.** Lock screen, unlock, touch,
+  power/volume keys, 8 CPUs (user report: "everything seems to work"). Known issue: Settings →
+  General → About freezes Settings (unverified guess: synchronous CoreTelephony query to the
+  removed CommCenter, or the HFS capacity crash sweet saw). Next: `sweetsample=Preferences,SpringBoard`
+  and symbolicate.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
