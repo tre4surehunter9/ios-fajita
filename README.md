@@ -1,5 +1,8 @@
 # ios-fajita
 
+> [!WARNING]
+> **Vibecoded.** All of this port's code, patches, tools and documentation (this README included) were written by an AI. They were then tested on one phone. Nothing here has been reviewed by a human expert. It may be wrong, may break, and may damage your device or erase your data. Use it entirely at your own risk. I am under no obligation to fix bugs, answer issues, or support anyone using it.
+
 **Apple's iOS 16 running on a OnePlus 6T.**
 
 This project runs Apple's open-source XNU kernel (xnu-8796, the iOS 16 generation) on the OnePlus 6T (`fajita`, Qualcomm SDM845). On top of the kernel runs the **unmodified iOS 16.7.16 (20H392) userland of the iPhone X**: launchd, the system daemons, backboardd, SpringBoard and the stock apps.
