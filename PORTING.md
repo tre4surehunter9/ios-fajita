@@ -148,6 +148,17 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   on the logo. SpringBoard[26] and backboardd[56] are alive (SMP sampler); their stacks need
   symbolicating.
 
+- **GUI blocked on LaunchServices (0088t, symbolicated with `tools/dsc-a2s.py`).** SpringBoard[26],
+  slide 0x5222c000. t0 (main): `-[CCSModuleRepository _initWithDirectoryURLs:...]` →
+  `-[LSApplicationRecord initWithBundleIdentifier:...]` → `LaunchServices::Database::Context::_get` →
+  `_LSContextInitCommon` → `os_unfair_lock_lock_slow`. t1 holds it: `_LSContextInitCommon` →
+  `__LAUNCH_SERVICES_IS_RESEEDING_ITS_DATABASE_AND_MAY_BLOCK__` → sync NSXPC to `lsd`.
+  Fresh root image, so lsd builds the app database on first boot. Either slow or lsd stuck.
+  Next: sample lsd (`sweetsample=SpringBoard,lsd`).
+- Symbolication: mount the SystemOS cryptex read-only as a normal user
+  (`apfs-fuse work/sysos.dmg work/mnt-sysos`, the dmg symlinked to a name without commas), then
+  `tools/dsc-a2s.py work/mnt-sysos/root/System/Library/Caches/com.apple.dyld SLIDE ADDR...`.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
