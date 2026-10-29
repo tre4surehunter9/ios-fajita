@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/SweetPlatformExpert.cpp b/iokit/Kernel/arm/SweetPlatformExpert.cpp
-index 82db0e1..3c20024 100644
+index 82db0e1..7dd93da 100644
 --- a/iokit/Kernel/arm/SweetPlatformExpert.cpp
 +++ b/iokit/Kernel/arm/SweetPlatformExpert.cpp
 @@ -11,6 +11,52 @@
@@ -35,11 +35,11 @@ index 82db0e1..3c20024 100644
 +	    (unsigned)busy, (unsigned)IOService::getServiceRoot()->getBusyState());
 +}
 +
++/* The ADT root's properties live on the IOPlatformExpertDevice (our provider). */
 +static bool
-+sweet_root_compatible(const char *want)
++sweet_root_compatible(IOService *provider, const char *want)
 +{
-+	OSData *compat = OSDynamicCast(OSData,
-+	    IORegistryEntry::getRegistryRoot()->getProperty("compatible"));
++	OSData *compat = OSDynamicCast(OSData, provider->getProperty("compatible"));
 +	if (compat == NULL) {
 +		return false;
 +	}
@@ -59,7 +59,7 @@ index 82db0e1..3c20024 100644
  	IOLog("SWEET: platform expert registered\n");
  	uint32_t busy_secs = 0;
  	thread_t thread;
-+	uint32_t iokitd_secs = sweet_root_compatible("oneplus,fajita") ? 20 : 0;
++	uint32_t iokitd_secs = sweet_root_compatible(provider, "oneplus,fajita") ? 20 : 0;
 +	PE_parse_boot_argn("sweetiokitd", &iokitd_secs, sizeof(iokitd_secs));
 +	if (iokitd_secs != 0 &&
 +	    kernel_thread_start(sweet_iokitd_stand_in, (void *)(uintptr_t)iokitd_secs, &thread) == KERN_SUCCESS) {

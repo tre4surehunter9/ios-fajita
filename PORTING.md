@@ -231,6 +231,10 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   default; sweet off unless `sweetiokitd=N`). Making `iokitDaemonAvailable()` false instead would
   panic on any later kext request.
 
+- 0092b: the stand-in never ran. The board check read `compatible` from the registry root entry,
+  but the ADT root's properties live on IOPlatformExpertDevice. Fixed in 0092 (uses the provider);
+  until rebuilt, `sweetiokitd=20` forces it (image 0092c).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
