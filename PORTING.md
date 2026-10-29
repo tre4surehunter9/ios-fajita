@@ -92,6 +92,15 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
 - **0085r** prepared: kernel 0085, real root `rd=ufsroot0 ufsrw=1 rootrw=1`, `sweetusb=2
   sweetecon=1 sweetlog=1 nointr_consio=1`, `cpus=1`, touch/keys off.
 
+- **0085r booted 2026-10-28 21:28:59** (after re-entering fastboot by hand: the first
+  `fastboot boot` after the userdata flash hung at "Sending", like sweet's ABL). About 40 s later
+  (21:29:39) the phone dropped into **Qualcomm memory-dump mode** (`05c6:900e` "QUSB_BULK",
+  Sahara; NOT EDL 9008). No USB network ever appeared; live log empty. New in this boot:
+  the QUSB2 power-up (0085) makes the DWC3 start DMA (prime suspect: SMMU fault if ABL left
+  the USB stream translated/faulting), plus UFS writes (`ufsrw`, `sweetlog`). Exit dump mode:
+  hold Power + Vol Up + Vol Down ~15 s.
+- **0085n** prepared for the bisect: same as 0085r but `sweetusb=1` (USB report-only, no DMA).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
