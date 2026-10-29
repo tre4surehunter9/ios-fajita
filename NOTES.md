@@ -12,6 +12,10 @@ Details, boot log and hardware facts: `PORTING.md`. State:
 - **2026-10-29: iOS GUI works** (`shim/out-fajita/shim-boot-0088q.img`): the GUI unblocked once
   the ADT got `/chosen mac-address-*` (MobileGestalt waited for Wi-Fi otherwise). Open: Settings →
   About freezes; USB console resets the SoC.
+- **Waiting on GitHub:** macOS arm64 runners out of capacity, so patch 0089 (read-only apps-SMMU
+  report for the USB stream) has never compiled. Next: re-queue CI, prepare `shim-boot-0089s.img`
+  (0088q boot-args minus `sweetfb_noconsole`, `sweetusb=1`), photograph the `SWEET USB: SMMU` lines,
+  then program a translation-off context bank for stream 0x740.
 - **Was blocked (fixed 2026-10-29):** (1) GUI stays on the Apple logo: SpringBoard waits in
   `__LAUNCH_SERVICES_IS_RESEEDING_ITS_DATABASE_AND_MAY_BLOCK__` (sync XPC to lsd), first boot
   of a fresh root. (2) USB device start (`sweetusb=2`) resets the SoC into Qualcomm dump mode

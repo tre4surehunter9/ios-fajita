@@ -185,7 +185,10 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   may need to mark the slot successful) and `fastboot boot` possibly refused with an image on the
   active slot (UniXNU report, unverified here).
 - 2026-10-29: GitHub macOS arm64 runners out of capacity ("job was not acquired by Runner"), so
-  0089 CI runs 40889556591 (x2) and 40895082214 were cancelled before compiling; retrying.
+  0089 CI runs 40889556591 (x2), 40895082214, 40899448896, 40903778296, 40907164548 (push to
+  main) and 40908014652 were all cancelled before compiling. Paused; re-run `gh workflow run
+  xnu.yml -R tre4surehunter9/ios-fajita --ref fajita` once GitHub has macOS capacity again.
+  0089 itself is untested (never compiled).
 
 ## Blocked / open
 
