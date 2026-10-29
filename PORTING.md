@@ -265,6 +265,10 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   `sweetusb=2` USB console, `sweetiokitd=20`, console muted). The user approved the flash. Restore with
   `dtb/fajita/boot_a.img` (Sailfish) or any earlier shim image.
 
+- boot_a with 0092a booted iOS on its own (user report), but the PC saw no USB device in the first
+  ~100 s after `fastboot reboot` (not yet explained; check the cable, timing, or whether USB comes up
+  later). Re-flashed boot_a with the "ios-fajita" model-number image.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
