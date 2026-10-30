@@ -180,3 +180,8 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   for 2.2: `sweet_gpu_bo_alloc/free`, `sweet_gpu_map/unmap` (4 KiB, CB1 TLB flush), `sweet_gpu_submit`
   (CP_INDIRECT_BUFFER + CACHE_FLUSH_TS fence at scratch+0x100, ring-space wait), `sweet_gpu_wait` (hang report
   with CB1 FSR/FAR). Self-test: 100 sequential IBs (two MEM_WRITEs each) + 50 queued IBs, then READY.
+- **0097g on the phone (2026-10-30): kernel panic**, `kmem_alloc(…, 268435456, 0x100021): failed with 3
+  @vm_kern.c:178` in kernel_task: the 256 MiB `ml_io_map_wcomb` of the whole arena (KERN_NO_SPACE in the I/O
+  mapping space; that allocation panics instead of failing). Fix folded into 0097: only the first 16 MiB (page
+  tables + kernel buffers) get a kernel mapping; userland buffers come from the rest and are zeroed through a
+  temporary mapping; 2.2 maps them into the client tasks.
