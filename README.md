@@ -20,7 +20,7 @@ As of **2026-10-29** the OnePlus 6T boots to the **iOS lock screen and home scre
 | Boot | Stock OnePlus bootloader (unlocked) → `fastboot boot` of our shim → XNU. Nothing has to be flashed to the boot partitions |
 | CPU | All 8 cores (4× Cortex-A55, 4× Cortex-A75) via PSCI, 16K pages, GICv3 Group 1 interrupts, timers |
 | Memory | 3.95 GiB of the upper DDR bank (`0x100000000`) |
-| Storage | UFS host driver (shared with sweet); the iOS root is a journaled HFS+ volume in `userdata`, read/write |
+| Storage | UFS host driver (shared with sweet); the iOS root is a journaled HFS+ volume filling `userdata` (about 110 GiB), read/write |
 | iOS userland | Real iPhone X 16.7.16 root filesystem and shared cache; launchd and the system daemons run |
 | Display | Kernel IOSurface + IOMobileFramebuffer services; CoreAnimation renders in software; frames are copied into the bootloader's splash buffer (`0x9d400000`, 1080×2340). Presented to iOS as an iPhone X panel (1125×2436) |
 | GUI | backboardd, SpringBoard, lock screen, home screen, Settings (About shows "OnePlus 6T") |
@@ -86,13 +86,15 @@ If a run is cancelled with "job was not acquired by Runner", GitHub's macOS arm6
 Download the iPhone X (iPhone10,3) iOS 16.7.16 (20H392) IPSW from Apple and extract the OS, SystemOS and AppOS disk images (`BuildManifest.plist` names them). With `apfs-fuse`, `hfsprogs` and sudo:
 
 ```sh
-tools/mkiosroot.sh OS.dmg SystemOS.dmg AppOS.dmg ios16-root.img 16G
+tools/mkiosroot.sh OS.dmg SystemOS.dmg AppOS.dmg ios16-root.img 112630M   # fajita userdata minus the log area
 sudo fsck.hfsplus -fy ios16-root.img
 sudo mount -t hfsplus -o loop,force ios16-root.img /mnt/iosroot
 sudo python3 tools/sweet-root-tweaks.py /mnt/iosroot
 sudo umount /mnt/iosroot
 img2simg ios16-root.img ios16-root.simg
 ```
+
+The OnePlus 6T's `userdata` is 112640 MiB. The kernel's persistent log uses its last 4100 KiB, so the volume must end before that; 112630M fills the rest. The image is sparse, so it takes about 12 GB on the PC and in the flash.
 
 A final read-only `fsck.hfsplus -n` can still report "Volume header needs minor repair" after a clean `-fy`. This is a quirk of the Linux fsck, and the volume mounts fine.
 

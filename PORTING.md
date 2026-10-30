@@ -275,6 +275,8 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   (flashed before v3's first boot, so MobileGestalt's cache starts fresh). If a daemon misbehaves,
   suspect the serial number first: it has an unusual format.
 
+- v3 + the new boot_a: **confirmed by the user** (About shows the new values and about 110 GB).
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
