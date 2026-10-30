@@ -96,3 +96,10 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   **CM3_FAULT** (bit 23): the GMU firmware faulted on the slumber request. edi194 saw the same missing ACK on
   this phone (state 0xF, treated as done). Suspect: the RSC wake ACK that never comes. Not blocking (the GMU
   is reset afterwards); must be fixed before the kernel driver idles the GPU at runtime.
+- **Kernel patch 0094 (written 2026-10-30):** `bsd/dev/sweet_a630.c`, called from `sweet_ufs_init` after the root is
+  found; runs only with `sweetgpu=1` on fajita, in its own thread. Stages 1-4 of the shim probe, same values:
+  clocks + CX GDSC + gmu_clk 200 MHz, PDC/RSC, GMU firmware from `/chosen` `gpufw,a630_gmu.bin`
+  (`tools/mkpayload.py --gpufw research/gpu/fw`), SMMU CB0 + SIDs 5/4, HFI INIT/FW_VERSION/TEST, GX rail +
+  SPTPRAC + RBBM_STATUS, slumber, GMU back in reset; logs `SWEET GPU:` lines. GMU memory: 64 KiB at 0xb0000000
+  (low bank, outside XNU's RAM; `sweetgpupool=` overrides) mapped write-combining like the USB DMA window.
+  Register access only through inline-asm plain `ldr/str [xN]`. Without `sweetgpu`, behaviour is unchanged.

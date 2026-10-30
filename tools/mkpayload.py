@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack an xnu kernel Mach-O + ADT into the payload the sweet shim boots.
 
-  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE]
+  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--gpufw DIR]
 
 The kernel is linked as a PIE with LC_DYLD_CHAINED_FIXUPS. Nobody else
 (no kmutil, no iBoot) resolves those for us, and xnu only rebases static
@@ -25,6 +25,10 @@ kernel_end past it, so the shim needs no changes: the image lands below the
 ADT and boot_args, inside topOfKernelData (never handed to the VM), and the
 ADT gets /chosen/memory-map "RAMDisk" = <phys, size> for IOFindBSDRoot to
 turn into md0 (boot with rd=md0).
+
+--gpufw adds the Adreno 630 firmware found in DIR (research/gpu/fw, never in
+git) as /chosen "gpufw,<file>" properties for bsd/dev/sweet_a630.c. After
+ios-flame's tools/mkpayload.py (MIT).
 """
 import argparse, os, struct, sys
 
@@ -132,6 +136,25 @@ def add_ramdisk_to_adt(adt_blob, phys, size):
     return adt.serialize(root)
 
 
+GPU_FW = ('a630_gmu.bin', 'a630_sqe.fw', 'a630_zap.mbn')
+
+
+def add_gpufw_to_adt(adt_blob, fw_dir):
+    """Return the ADT with /chosen/gpufw,<file> for each GPU_FW file present in fw_dir."""
+    root, _ = adt.parse(adt_blob)
+    chosen = next(c for c in root.children if c.name == 'chosen')
+    chosen.props = [p for p in chosen.props if not p[0].startswith('gpufw,')]
+    found = []
+    for name in GPU_FW:
+        path = os.path.join(fw_dir, name)
+        if os.path.exists(path):
+            chosen.props.append(('gpufw,' + name, 0, open(path, 'rb').read()))
+            found.append(name)
+    if not found:
+        raise SystemExit(f'error: no GPU firmware in {fw_dir}')
+    return adt.serialize(root), found
+
+
 def adt_dram(adt_blob):
     """Kernel-managed RAM <base, size> from the ADT's /chosen dram-base/dram-size."""
     root, _ = adt.parse(adt_blob)
@@ -140,7 +163,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -154,6 +177,9 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     kernel_end = (kernel_end + PAGE - 1) & ~(PAGE - 1)
 
     adt_blob = open(adt_path, 'rb').read()
+    gpufw = None
+    if gpufw_dir:
+        adt_blob, gpufw = add_gpufw_to_adt(adt_blob, gpufw_dir)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -188,7 +214,7 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None):
     for i, t in enumerate(seg_table):
         struct.pack_into('<4Q', out, SEG_TABLE + 32 * i, *t)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
-                entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, size=len(out),
+                entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, gpufw=gpufw, size=len(out),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])
     return bytes(out), info
 
@@ -198,8 +224,9 @@ if __name__ == '__main__':
     ap.add_argument('kernel'); ap.add_argument('adt'); ap.add_argument('out')
     ap.add_argument('--cmdline', default='debug=0xc serial=3 cpus=1 keepsyms=1')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
+    ap.add_argument('--gpufw', help='Adreno 630 firmware directory (/chosen/gpufw,*, bsd/dev/sweet_a630.c)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.gpufw)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':
