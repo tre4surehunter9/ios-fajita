@@ -44,6 +44,51 @@ The OnePlus 6 and 6T share the zap (mainline's fajita DT uses the enchilada path
 
 Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU-rendered GUI from booting.
 
+## Phase 2 plan: the GPU usable from iOS userland (written 2026-10-30)
+
+Goal: a process on the phone allocates GPU memory, submits a command buffer and waits on a fence; then
+Mesa's Turnip (Vulkan) clears an image on the A630. That is the base metal2vulkan (Phase 3) needs.
+
+Template: ios-flame's stack (MIT): kernel core + IOKit accelerator service + user client speaking the
+**NativeAdreno ABI v1** (UniXNU, MIT; `phone/turnip/NativeAdrenoABI.h`), which Turnip's "darwin" kernel
+backend uses unchanged. Our A630 power-up (legacy GMU, HFI v1) stays ours; ring, page-table, submit and
+user-client code can come from ios-flame with A640 -> A630 changes.
+
+**Constraint from edi194 (same kernel lineage):** XNU's page allocator here can return pages below gPhysBase
+(`kmem_alloc_contig`, and `IOBufferMemoryDescriptor` in their user client), and the first pmap operation on
+one panics (`phys_to_kv_range: illegal PA`). So GPU memory comes from **our own arena in the low DDR bank**,
+outside XNU's RAM (XNU runs at 0x100000000; the low bank above 0xb0000000 up to rmtfs at 0xfde01000 is unused
+by XNU, ~1.2 GiB), mapped write-combining like today's pool. Step 2.1 measures the exact free range from the
+live FDT before choosing a size; whether our tree has the allocator bug at all is a side check, not a
+dependency.
+
+Steps, each its own patch and phone test (`fastboot boot`, USB log):
+
+- **2.1 Persistent GPU.** Bring-up once at boot and keep GX up (no slumber), one lock around the GPU, ring
+  with a real fence (`CP_EVENT_WRITE CACHE_FLUSH_TS` into a fence page), `CP_INDIRECT_BUFFER` submits,
+  timeout + recovery (re-run the ladder after a hang). The arena: allocator for buffer objects, GPU page
+  tables with 4 KiB pages for the CP context, CPU mapping WC. Kernel self-test: an IB that writes memory,
+  fence waited. Gate: `sweetgpu=3`.
+- **2.2 Accelerator service + user client.** NativeAdreno ABI v1: GetDeviceInfo (chip_id 0x06030001, GMEM
+  1 MiB at 0x100000, UCHE trap base 0x1fffffffff000, UBWC per a630), BoAlloc / BoMap at the client's IOVA /
+  BoCpuMap (WC) / BoImport (later), Submit (N IBs + kernel-side cache flush), WaitFence, per-connection VA
+  windows (Turnip chooses addresses). Test tool `gputest` (C, built on CI): alloc, map, submit an IB that
+  writes a value, wait, read it back from userland.
+- **2.3 Turnip for iOS on GitHub Actions.** A workflow (macos-15, Xcode 16 iPhoneOS SDK, meson) that builds
+  Mesa at ios-flame's pin with its darwin-KMD patches for arm64-apple-ios16.0, plus `vktest` (create device,
+  clear an image, read back). Put the dylib and the test on the root (root tweak or overlay). **Milestone:
+  vktest's clear is read back correct on the phone.**
+- **2.4 Presentation path** (from ios-flame 0095/0119): GPU blit of a surface to the panel framebuffer, so a
+  Vulkan image can reach the screen. Needed by Phase 3, can slip until then.
+
+Then Phase 3 (metal2vulkan + SweetMetal2.bundle on CI) and Phase 4 (`sweetmtl=2`) as above.
+
+**At the end of the GPU milestone (user request, 2026-10-30): investigate vulkan2metal.** Note the
+direction: metal2vulkan (Phase 3) implements *Metal on top of Vulkan*, which is what iOS itself and its apps
+need, since they only speak Metal. A vulkan2metal layer (MoltenVK-style) runs *Vulkan apps on top of Metal*;
+on this port that would only matter for Vulkan software (games, emulators, ports) once Metal works, or as a
+cross-check of our Metal. The investigation decides whether either use is worth it.
+
 ## Log
 
 - **Stage 1 (shim, 2026-10-29):** `GPUPROBE=1 BOARD=fajita shim/build.sh` builds a no-payload shim that runs
