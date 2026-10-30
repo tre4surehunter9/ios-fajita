@@ -19,7 +19,14 @@
  * HFI/log addresses at 0x60100000/0x60300000 (not mapped yet: the firmware
  * does not touch RAM while it boots), release SYSRESET, expect 0xbabeface.
  *
- * No SMMU and no GX-side access yet. A read of an unclocked block hangs the
+ * Stage 3 adds the GPU SMMU (0x5040000) and the HFI queues, per the recipe
+ * edi194 recorded working on this chip (Bergamota's A630 stage 4): micro-MMU
+ * halt + the vendor's attach-impl-defs, context bank 0 (+0x8000) with our own
+ * 4 KiB tables, exact SMRs (mask 0) for the GMU's streams 5 and 4 (S2CR
+ * first), then mainline's HFI v1 table (a6xx_hfi.c: 3 queues at +4K/+8K/+12K,
+ * legacy ids 0/4/5) and the INIT / FW_VERSION / TEST handshake.
+ *
+ * No GX-side access yet. A read of an unclocked block hangs the
  * bus, so every step prints first: the last line on screen says where it
  * stopped.
  */
@@ -93,7 +100,170 @@ extern const uint8_t gmu_fw_start[], gmu_fw_end[];
 static void gmu_set(const char *name, uint32_t off, uint32_t val)
 {
 	wr32(GMU + off, val);
-	con_hex2(name, "off=", off, "val=", rd32(GMU + off));
+	if (rd32(GMU + off) != val)
+		con_hex2(name, "MISMATCH off=", off, "got=", rd32(GMU + off));
+}
+
+/* ---- stage 3: GPU SMMU + HFI ---- */
+
+#define SMMU		0x05040000UL
+#define SMMU_GR1	(SMMU + 0x1000)
+#define SMMU_CB0	(SMMU + 0x8000)		/* 8 global 4 KiB pages (IDR1 0x20008005) */
+#define POOL		0xb0000000UL		/* 64 KiB, low bank, unused at shim time */
+#define POOL_L1		(POOL + 0x0000)
+#define POOL_L2		(POOL + 0x1000)
+#define POOL_L3A	(POOL + 0x2000)		/* 0x60000000-0x601fffff */
+#define POOL_L3B	(POOL + 0x3000)		/* 0x60200000-0x603fffff */
+#define POOL_DUMMY	(POOL + 0x4000)
+#define POOL_HFI	(POOL + 0x5000)		/* table page + 3 queue pages */
+#define POOL_DUMP	(POOL + 0xa000)
+#define POOL_LOG	(POOL + 0xe000)
+#define VA_HFI		0x60100000u
+#define VA_DUMP		0x60200000u
+#define PTE_TABLE	3u
+#define PTE_PAGE	0xe43u			/* AF, outer shareable, AP, nG, attr 0 (NC) */
+
+static inline void wr64(uintptr_t a, uint64_t v)
+{
+	*(volatile uint64_t *)a = v;
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+static void map_pages(uintptr_t l3, uint32_t va, uintptr_t pa, unsigned pages)
+{
+	for (unsigned i = 0; i < pages; i++)
+		wr64(l3 + 8 * (((va >> 12) & 0x1ff) + i), (pa + 0x1000 * i) | PTE_PAGE);
+}
+
+static int smmu_setup(void)
+{
+	for (uintptr_t a = POOL; a < POOL + 0x10000; a += 8)
+		*(volatile uint64_t *)a = 0;
+	wr64(POOL_L1 + 8 * 1, POOL_L2 | PTE_TABLE);		/* VA[31:30] = 1 */
+	wr64(POOL_L2 + 8 * 256, POOL_L3A | PTE_TABLE);		/* VA[29:21] = 256 */
+	wr64(POOL_L2 + 8 * 257, POOL_L3B | PTE_TABLE);		/* VA[29:21] = 257 */
+	map_pages(POOL_L3A, 0x60000000u, POOL_DUMMY, 1);
+	map_pages(POOL_L3A, VA_HFI, POOL_HFI, 4);
+	map_pages(POOL_L3B, VA_DUMP, POOL_DUMP, 4);
+	map_pages(POOL_L3B, 0x60300000u, POOL_LOG, 2);
+
+	/* Vendor qsmmuv2 reset: halt the micro-MMU, write attach-impl-defs, resume. */
+	uint32_t ctrl = rd32(SMMU + 0x6000);
+	wr32(SMMU + 0x6000, ctrl | (1u << 2));			/* HALT_REQ */
+	int rc = wait_bits(SMMU + 0x6000, 1u << 3, 1, 10000);	/* IDLE */
+	static const uint32_t impl[][2] = {
+		{ 0x6060, 0x1055 }, { 0x678c, 0x8 }, { 0x6794, 0x28 }, { 0x6800, 0x6 },
+		{ 0x6900, 0x3ff }, { 0x6924, 0x204 }, { 0x6928, 0x11000 }, { 0x6930, 0x800 },
+		{ 0x6960, 0xffffffff }, { 0x6b64, 0x1a5551 }, { 0x6b68, 0x9a82a382 },
+	};
+	for (unsigned i = 0; i < sizeof(impl) / sizeof(impl[0]); i++)
+		wr32(SMMU + impl[i][0], impl[i][1]);
+	wr32(SMMU + 0x6000, 0x2378);				/* resume (attach-impl-defs value) */
+	con_hex2(rc ? " mmu TIMEOUT" : " micro-mmu", "ctrl=", rd32(SMMU + 0x6000), "scr0=", rd32(SMMU + 0x0));
+
+	/* Context bank 0: stage 1 translate, stage 2 bypass, 64-bit TTBR0. */
+	wr32(SMMU_GR1 + 0x0, (1u << 16) | (3u << 8) | (0xfu << 12));	/* CBAR(0) */
+	wr32(SMMU_GR1 + 0x800, 1);					/* CBA2R(0) */
+	wr32(SMMU_CB0 + 0x4, 0x70000000);				/* ACTLR */
+	wr32(SMMU_CB0 + 0x10, 1u | (7u << 15) | (1u << 4));		/* TCR2 */
+	wr64(SMMU_CB0 + 0x20, (1ull << 48) | POOL_L1);			/* TTBR0, ASID 1 */
+	wr32(SMMU_CB0 + 0x30, (2u << 12) | (1u << 23) | 32u);		/* TCR */
+	wr32(SMMU_CB0 + 0x38, 0x0004ff44);				/* MAIR0 */
+	wr32(SMMU_CB0 + 0x0, 0x00c01067);				/* SCTLR last */
+	con_hex2(" cb0", "sctlr=", rd32(SMMU_CB0 + 0x0), "tcr=", rd32(SMMU_CB0 + 0x30));
+
+	/* Streams 5 (gmu_kernel) and 4 (gmu_user): S2CR first, exact SMR (mask 0). */
+	static const uint32_t sid[2] = { 5, 4 };
+	int ok = 1;
+	for (unsigned i = 0; i < 2; i++) {
+		wr32(SMMU + 0xc00 + 4 * i, 0x300);			/* S2CR: translate via CB0 */
+		wr32(SMMU + 0x800 + 4 * i, (1u << 31) | sid[i]);	/* SMR: VALID | sid */
+		uint32_t smr = rd32(SMMU + 0x800 + 4 * i);
+		ok &= smr == ((1u << 31) | sid[i]);
+		con_hex2(" smr", "got=", smr, "s2cr=", rd32(SMMU + 0xc00 + 4 * i));
+	}
+	wr32(SMMU + 0x68, 0);					/* TLBIALLNSNH */
+	wr32(SMMU + 0x70, 0);					/* sTLBGSYNC */
+	rc = wait_bits(SMMU + 0x74, 1u, 0, 10000);		/* sTLBGSTATUS */
+	con_hex2(ok ? " smmu ok" : " SMMU BAD", "gfsr=", rd32(SMMU + 0x48), "tlbsync=", (uint32_t)rc);
+	return ok ? 0 : -1;
+}
+
+/* HFI v1 table (a6xx_hfi.c layout) in the HFI pages, as the GMU will see it at VA_HFI. */
+static void hfi_table(void)
+{
+	volatile uint32_t *t = (volatile uint32_t *)POOL_HFI;
+	t[0] = 0; t[1] = 6 + 3 * 12; t[2] = 6; t[3] = 12; t[4] = 3; t[5] = 3;
+	static const uint32_t ids[3] = { 0, 4, 5 };		/* CMD, MSG (legacy 4), DBG (legacy 5) */
+	for (unsigned q = 0; q < 3; q++) {
+		volatile uint32_t *h = t + 6 + 12 * q;
+		h[0] = 1;					/* status */
+		h[1] = VA_HFI + 0x1000 * (q + 1);		/* iova */
+		h[2] = (10u << 8) | ids[q];			/* type */
+		h[3] = 0x1000 >> 2;				/* size in dwords */
+		h[4] = 0; h[5] = 0; h[6] = 1; h[7] = 1;		/* msg_size, dropped, rx/tx watermark */
+		h[8] = 1; h[9] = 0; h[10] = 0; h[11] = 0;	/* rx/tx request, read/write index */
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+#define GMU_HFI_STATUS		0x14600
+#define GMU_HFI_VERSION		0x14604
+#define GMU_HFI_INIT		0x14618
+#define GMU_G2H_CLR		0x14644
+#define GMU_G2H_INFO		0x14648
+#define GMU_H2G_SET		0x14650
+
+/* Send one command (a6xx_hfi.c header layout), wait for the MSG queue, return the reply header. */
+static uint32_t hfi_cmd(uint32_t id, const uint32_t *payload, uint32_t n, uint32_t *reply)
+{
+	static uint32_t seq;
+	volatile uint32_t *t = (volatile uint32_t *)POOL_HFI;
+	volatile uint32_t *cmdh = t + 6, *msgh = t + 6 + 12;
+	volatile uint32_t *cmdq = (volatile uint32_t *)(POOL_HFI + 0x1000);
+	volatile uint32_t *msgq = (volatile uint32_t *)(POOL_HFI + 0x2000);
+	uint32_t w = cmdh[11], dwords = n + 1;
+
+	seq = (seq + 1) % 0xfff;
+	cmdq[w] = (seq << 20) | (0u << 16) | (dwords << 8) | id;	/* HFI_MSG_CMD */
+	for (uint32_t i = 0; i < n; i++)
+		cmdq[(w + 1 + i) % 1024] = payload[i];
+	__asm__ volatile("dsb sy" ::: "memory");
+	cmdh[11] = (w + dwords) % 1024;
+	__asm__ volatile("dsb sy" ::: "memory");
+	wr32(GMU + GMU_H2G_SET, 1);
+
+	if (wait_bits(GMU + GMU_G2H_INFO, 1u, 1, 100000))
+		return 0;
+	wr32(GMU + GMU_G2H_CLR, rd32(GMU + GMU_G2H_INFO));
+	uint32_t r = msgh[10];
+	if (r == msgh[11])
+		return 0;
+	uint32_t hdr = msgq[r], size = (hdr >> 8) & 0xff;
+	for (uint32_t i = 0; i < 4; i++)
+		reply[i] = i < size ? msgq[(r + i) % 1024] : 0;
+	msgh[10] = (r + size) % 1024;
+	__asm__ volatile("dsb sy" ::: "memory");
+	return hdr;
+}
+
+static void hfi_handshake(void)
+{
+	wr32(GMU + GMU_HFI_INIT, 1);
+	int rc = wait_bits(GMU + GMU_HFI_STATUS, 1u, 1, 100000);
+	con_hex2(rc ? "HFI NOT UP" : "HFI UP", "status=", rd32(GMU + GMU_HFI_STATUS),
+	    "ver=", rd32(GMU + GMU_HFI_VERSION));
+	if (rc)
+		return;
+	uint32_t r[4];
+	const uint32_t init[4] = { 0, VA_DUMP, 0x4000, 1 };	/* seg, dbg addr/size, COLD_BOOT */
+	uint32_t h = hfi_cmd(0, init, 4, r);
+	con_hex2(h ? " init ack" : " init NO REPLY", "hdr=", h, "err=", r[2]);
+	const uint32_t fwver[1] = { 0x100a0000 };
+	h = hfi_cmd(1, fwver, 1, r);
+	con_hex2(h ? " fw ver" : " fwver NO REPLY", "hdr=", h, "ver=", r[3]);
+	h = hfi_cmd(5, 0, 0, r);
+	con_hex2(h ? " test" : " test NO REPLY", "hdr=", h, "data=", r[3]);
 }
 
 static void gmu_boot(void)
@@ -130,6 +300,10 @@ static void gmu_boot(void)
 		bad += rd32(GMU + GMU_ITCM + 4 * i) != fw[i];
 	con_hex2(bad ? " FW MISMATCH" : " fw ok", "samples bad=", bad, "dtcm ver=", rd32(GMU + GMU_DTCM_VERSION));
 
+	con_str("GPU", "stage 3: smmu + hfi table");
+	int smmu_ok = smmu_setup() == 0;
+	if (smmu_ok)
+		hfi_table();
 	gmu_set(" tcm ret", GMU_TCM_RET, 1);
 	gmu_set(" init res", GMU_FW_INIT_RESULT, 0);
 	gmu_set(" boot cfg", GMU_BOOT_CONFIG, 2);
@@ -155,6 +329,8 @@ static void gmu_boot(void)
 		delay_us(1000);
 	}
 	con_hex2(res == 0xbabeface ? "GMU RUNS" : "GMU NO", "init=", res, "sysrst=", rd32(GMU + GMU_SYSRESET));
+	if (res == 0xbabeface && smmu_ok)
+		hfi_handshake();
 	/* Leave the GMU parked in reset (edi194: a running core cannot be reloaded). */
 	wr32(GMU + GMU_SYSRESET, 1);
 	con_str("GPU", "stage 2 done, GMU back in reset");
