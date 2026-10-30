@@ -1,0 +1,410 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 2ef1608..8af58ed 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -17,6 +17,15 @@
+  *   8. slumber, GMU back in reset
+  * and logs every step ("SWEET GPU:"). Without sweetgpu nothing here runs.
+  *
++ * sweetgpu=3 (GPU-PLAN.md Phase 2.1) keeps the GPU up instead of 8: the zap
++ * stays loaded, the GMU keeps running and the GPU_SET OOB stays asserted so
++ * GX is never collapsed under us. The CP context widens to 39-bit GPU VAs,
++ * buffers come from an arena in the low DDR bank (sweetgpuarena=, default
++ * 256 MiB at 0xb1000000: XNU's page allocator here can return pages below
++ * gPhysBase, edi194's console80), page tables are built on demand from the
++ * arena, and sweet_gpu_submit()/sweet_gpu_wait() run indirect buffers with
++ * a CACHE_FLUSH_TS fence. A self-test checks it before the GPU is marked ready.
++ *
+  * Every value is the one shim/gpuprobe.c (stages 1-4) proved on the phone;
+  * that file and GPU-PLAN.md have the sources (mainline a6xx_gmu.c /
+  * a6xx_hfi.c / gpucc-sdm845.c / sdm845.dtsi for facts, edi194's notes for
+@@ -46,6 +55,7 @@
+ #include <machine/machine_routines.h>
+ #include <pexpert/pexpert.h>
+ #include <pexpert/device_tree.h>
++#include <kern/locks.h>
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
+@@ -57,7 +67,8 @@ extern void _disable_preemption(void);
+ extern void _enable_preemption(void);
+ void sweet_a630_init(void);
+ 
+-static uint32_t gpu_level;	/* sweetgpu=: 1 GMU/HFI/GX, 2 also the CP and zap */
++static uint32_t gpu_level;	/* sweetgpu=: 1 GMU/HFI/GX, 2 also the CP and zap, 3 keep it up */
++static bool gpu_kept;		/* sweetgpu=3 and the CP came up: no slumber, no GMU reset */
+ 
+ /* ---- register windows ---- */
+ 
+@@ -761,6 +772,324 @@ zap_load(const uint8_t *mbn, uint32_t len)
+ 	return (rc || res) ? -1 : 0;
+ }
+ 
++/* ---- Phase 2.1: the GPU stays up (sweetgpu=3) ---- */
++
++#define CB1			(w.smmu + 0x9000)
++#define CB_FSR			0x58
++#define CB_FAR			0x60
++#define CB_TLBIALL		0x618
++#define CB_TLBSYNC		0x7f0
++#define CB_TLBSTATUS		0x7f4
++#define CP_INDIRECT_BUFFER	0x3f
++#define ARENA_PT_SIZE		0x400000ULL	/* 1024 page tables */
++#define ARENA_CHUNK		0x10000ULL
++#define ARENA_MAX		0x40000000ULL	/* 1 GiB */
++#define FENCE_OFF		0x100		/* in the scratch page */
++#define GPU_VA_KERNEL		0x100000000ULL	/* self-test buffers */
++
++static uint64_t arena_pa = 0xb1000000ULL, arena_size = 0x10000000ULL;
++static vm_offset_t arena_va;
++static uint32_t pt_next;
++static uint8_t chunk_used[(ARENA_MAX - ARENA_PT_SIZE) / ARENA_CHUNK];
++static uint32_t fence_seq;
++static volatile bool gpu_ready, gpu_hung;
++static LCK_GRP_DECLARE(sweet_gpu_grp, "sweet_gpu");
++static LCK_MTX_DECLARE(sweet_gpu_lock, &sweet_gpu_grp);
++
++bool sweet_gpu_is_ready(void);
++int sweet_gpu_bo_alloc(uint64_t size, uint64_t *pa, vm_offset_t *kva);
++void sweet_gpu_bo_free(uint64_t pa, uint64_t size);
++int sweet_gpu_map(uint64_t iova, uint64_t pa, uint64_t size);
++void sweet_gpu_unmap(uint64_t iova, uint64_t size);
++int sweet_gpu_submit(uint64_t ib_iova, uint32_t dwords, uint32_t *seq);
++int sweet_gpu_wait(uint32_t seq, unsigned timeout_us);
++
++/* Kernel VA of a pool or arena physical address (both write-combining). */
++static vm_offset_t
++pa2va(uint64_t pa)
++{
++	if (pa >= pool_pa && pa < pool_pa + POOL_SIZE) {
++		return PV(pa - pool_pa);
++	}
++	if (arena_va && pa >= arena_pa && pa < arena_pa + arena_size) {
++		return arena_va + (vm_offset_t)(pa - arena_pa);
++	}
++	return 0;
++}
++
++static uint64_t
++pt_alloc(void)
++{
++	uint64_t off = 0x1000ULL * pt_next;
++	if (off + 0x1000 > ARENA_PT_SIZE) {
++		return 0;
++	}
++	pt_next++;
++	for (uint64_t o = 0; o < 0x1000; o += 8) {
++		wr64(arena_va + (vm_offset_t)(off + o), 0);
++	}
++	return arena_pa + off;
++}
++
++/* The next-level table under table[idx], allocated if absent; 0 if none can be made. */
++static uint64_t
++pt_walk(uint64_t table, unsigned idx)
++{
++	vm_offset_t e = pa2va(table) + 8 * idx;
++	uint64_t v = rd(e) | ((uint64_t)rd(e + 4) << 32);
++	if (v & 1) {
++		return (v & 3) == 3 ? (v & 0xfffffff000ULL) : 0;
++	}
++	uint64_t t = pt_alloc();
++	if (t) {
++		wr64(e, t | PTE_TABLE);
++	}
++	return t;
++}
++
++static void
++cb1_tlb_flush(void)
++{
++	wr(CB1 + CB_TLBIALL, 0);
++	wr(CB1 + CB_TLBSYNC, 0);
++	(void)wait_bits(CB1 + CB_TLBSTATUS, 1u, false, 10000);
++}
++
++/* 4 KiB entries (pte = pa | attr, or 0 to unmap) for [iova, iova + size) in the CP's context. */
++static int
++map_4k(uint64_t iova, uint64_t pa, uint64_t size, bool unmap)
++{
++	for (uint64_t o = 0; o < size; o += 0x1000) {
++		uint64_t va = iova + o;
++		uint64_t l2 = pt_walk(pool_pa + P_CP_L1, (va >> 30) & 0x1ff);
++		uint64_t l3 = l2 ? pt_walk(l2, (va >> 21) & 0x1ff) : 0;
++		if (!l3) {
++			printf("SWEET GPU: map: no page table for 0x%llx (page-table space full)\n", va);
++			return -1;
++		}
++		wr64(pa2va(l3) + 8 * ((va >> 12) & 0x1ff), unmap ? 0 : ((pa + o) | PTE_PAGE));
++	}
++	cb1_tlb_flush();
++	return 0;
++}
++
++bool
++sweet_gpu_is_ready(void)
++{
++	return gpu_ready && !gpu_hung;
++}
++
++int
++sweet_gpu_bo_alloc(uint64_t size, uint64_t *pa, vm_offset_t *kva)
++{
++	uint32_t n = (uint32_t)((size + ARENA_CHUNK - 1) / ARENA_CHUNK);
++	uint32_t total = (uint32_t)((arena_size - ARENA_PT_SIZE) / ARENA_CHUNK);
++	if (!arena_va || n == 0 || n > total) {
++		return -1;
++	}
++	lck_mtx_lock(&sweet_gpu_lock);
++	for (uint32_t i = 0, run = 0; i < total; i++) {
++		run = chunk_used[i] ? 0 : run + 1;
++		if (run == n) {
++			uint32_t first = i + 1 - n;
++			memset(&chunk_used[first], 1, n);
++			lck_mtx_unlock(&sweet_gpu_lock);
++			uint64_t off = ARENA_PT_SIZE + ARENA_CHUNK * first;
++			*pa = arena_pa + off;
++			*kva = arena_va + (vm_offset_t)off;
++			for (uint64_t o = 0; o < ARENA_CHUNK * n; o += 8) {
++				wr64(*kva + (vm_offset_t)o, 0);
++			}
++			return 0;
++		}
++	}
++	lck_mtx_unlock(&sweet_gpu_lock);
++	return -1;
++}
++
++void
++sweet_gpu_bo_free(uint64_t pa, uint64_t size)
++{
++	if (pa < arena_pa + ARENA_PT_SIZE || pa + size > arena_pa + arena_size) {
++		return;
++	}
++	uint32_t first = (uint32_t)((pa - arena_pa - ARENA_PT_SIZE) / ARENA_CHUNK);
++	uint32_t n = (uint32_t)((size + ARENA_CHUNK - 1) / ARENA_CHUNK);
++	lck_mtx_lock(&sweet_gpu_lock);
++	memset(&chunk_used[first], 0, n);
++	lck_mtx_unlock(&sweet_gpu_lock);
++}
++
++int
++sweet_gpu_map(uint64_t iova, uint64_t pa, uint64_t size)
++{
++	if ((iova | pa | size) & 0xfff || iova + size > (1ULL << 39)) {
++		return -1;
++	}
++	lck_mtx_lock(&sweet_gpu_lock);
++	int rc = map_4k(iova, pa, size, false);
++	lck_mtx_unlock(&sweet_gpu_lock);
++	return rc;
++}
++
++void
++sweet_gpu_unmap(uint64_t iova, uint64_t size)
++{
++	lck_mtx_lock(&sweet_gpu_lock);
++	(void)map_4k(iova, 0, size, true);
++	lck_mtx_unlock(&sweet_gpu_lock);
++}
++
++/* IB, then a CACHE_FLUSH_TS fence write; does not wait for the GPU. */
++int
++sweet_gpu_submit(uint64_t ib_iova, uint32_t dwords, uint32_t *seq)
++{
++	if (!sweet_gpu_is_ready() && !(gpu_kept && !gpu_hung)) {
++		return -1;
++	}
++	lck_mtx_lock(&sweet_gpu_lock);
++	uint32_t s = ++fence_seq;
++	uint64_t fva = VA_SCRATCH + FENCE_OFF;
++	const uint32_t dw[] = {
++		pkt7(CP_INDIRECT_BUFFER, 3), (uint32_t)ib_iova, (uint32_t)(ib_iova >> 32), dwords,
++		pkt7(CP_EVENT_WRITE, 4), CACHE_FLUSH_TS, (uint32_t)fva, (uint32_t)(fva >> 32), s,
++	};
++	const uint32_t n = sizeof(dw) / sizeof(dw[0]);
++	int rc = -1;
++	for (unsigned i = 0; i < 10000; i++) {		/* ring space: up to 100 ms */
++		if ((rd(GR(CP_RB_RPTR)) - ring_wptr - 1) % RING_DW >= n) {
++			rc = 0;
++			break;
++		}
++		delay(10);
++	}
++	if (rc == 0) {
++		for (uint32_t i = 0; i < n; i++) {
++			wr(PV(P_RING) + 4 * ((ring_wptr + i) % RING_DW), dw[i]);
++		}
++		ring_wptr = (ring_wptr + n) % RING_DW;
++		wr(GR(CP_RB_WPTR), ring_wptr);
++		*seq = s;
++	} else {
++		printf("SWEET GPU: submit: ring full (rptr %u wptr %u)\n", rd(GR(CP_RB_RPTR)), ring_wptr);
++	}
++	lck_mtx_unlock(&sweet_gpu_lock);
++	return rc;
++}
++
++int
++sweet_gpu_wait(uint32_t seq, unsigned timeout_us)
++{
++	for (unsigned t = 0; t <= timeout_us; t += 10) {
++		if ((int32_t)(rd(PV(P_SCRATCH) + FENCE_OFF) - seq) >= 0) {
++			return 0;
++		}
++		delay(10);
++	}
++	if (!gpu_hung) {
++		gpu_hung = true;
++		printf("SWEET GPU: HANG waiting for fence %u (at %u): rptr %u wptr %u rbbm_status 0x%x cp_status1 0x%x"
++		    " hw_fault 0x%x, cb1 fsr 0x%x far 0x%x%08x\n", seq, rd(PV(P_SCRATCH) + FENCE_OFF),
++		    rd(GR(CP_RB_RPTR)), ring_wptr, rd(GR(RBBM_STATUS)), rd(GR(CP_STATUS_1)), rd(GR(CP_HW_FAULT)),
++		    rd(CB1 + CB_FSR), rd(CB1 + CB_FAR + 4), rd(CB1 + CB_FAR));
++	}
++	return -1;
++}
++
++/* Kernel self-test: IBs that write memory, one at a time and 50 queued at once. */
++static int
++gpu_selftest(void)
++{
++	uint64_t ib_pa, dst_pa;
++	vm_offset_t ib, dst;
++	const uint64_t ib_va = GPU_VA_KERNEL, dst_va = GPU_VA_KERNEL + 0x100000;
++	if (sweet_gpu_bo_alloc(0x10000, &ib_pa, &ib) || sweet_gpu_bo_alloc(0x10000, &dst_pa, &dst) ||
++	    sweet_gpu_map(ib_va, ib_pa, 0x10000) || sweet_gpu_map(dst_va, dst_pa, 0x10000)) {
++		printf("SWEET GPU: self-test: no buffers or mappings\n");
++		return -1;
++	}
++	uint64_t t0 = mach_absolute_time(), ns;
++	unsigned good = 0;
++	for (uint32_t i = 0; i < 100; i++) {
++		uint32_t v = 0xc0de0000 | i, seq = 0;
++		const uint32_t dw[8] = {
++			pkt7(CP_MEM_WRITE, 3), (uint32_t)dst_va, (uint32_t)(dst_va >> 32), v,
++			pkt7(CP_MEM_WRITE, 3), (uint32_t)(dst_va + 4), (uint32_t)((dst_va + 4) >> 32), ~v,
++		};
++		for (unsigned k = 0; k < 8; k++) {
++			wr(ib + 4 * k, dw[k]);
++		}
++		wr(dst, 0);
++		wr(dst + 4, 0);
++		if (sweet_gpu_submit(ib_va, 8, &seq) || sweet_gpu_wait(seq, 100000)) {
++			break;
++		}
++		good += rd(dst) == v && rd(dst + 4) == ~v;
++	}
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	printf("SWEET GPU: self-test sequential: %u/100 IBs correct, %llu us each\n", good, ns / 100000);
++
++	/* 50 IBs queued before waiting: each writes its own slot. */
++	uint32_t seq = 0, queued = 0;
++	for (uint32_t i = 0; i < 50; i++) {
++		vm_offset_t b = ib + 0x100 + 32 * i;
++		uint64_t slot = dst_va + 0x100 + 4 * i;
++		const uint32_t dw[4] = { pkt7(CP_MEM_WRITE, 3), (uint32_t)slot, (uint32_t)(slot >> 32), 0xba7c0000 | i };
++		for (unsigned k = 0; k < 4; k++) {
++			wr(b + 4 * k, dw[k]);
++		}
++		wr(dst + 0x100 + 4 * i, 0);
++	}
++	for (uint32_t i = 0; i < 50; i++) {
++		if (sweet_gpu_submit(ib_va + 0x100 + 32 * i, 4, &seq)) {
++			break;
++		}
++		queued++;
++	}
++	unsigned batch = 0;
++	if (queued == 50 && sweet_gpu_wait(seq, 200000) == 0) {
++		for (uint32_t i = 0; i < 50; i++) {
++			batch += rd(dst + 0x100 + 4 * i) == (0xba7c0000 | i);
++		}
++	}
++	printf("SWEET GPU: self-test queued: %u/50 IBs correct, fence %u, cb1 fsr 0x%x\n", batch,
++	    rd(PV(P_SCRATCH) + FENCE_OFF), rd(CB1 + CB_FSR));
++	sweet_gpu_unmap(ib_va, 0x10000);
++	sweet_gpu_unmap(dst_va, 0x10000);
++	sweet_gpu_bo_free(ib_pa, 0x10000);
++	sweet_gpu_bo_free(dst_pa, 0x10000);
++	return (good == 100 && batch == 50) ? 0 : -1;
++}
++
++/* After the CP test: widen the CP context to 39 bits, map the arena, self-test, mark ready. */
++static int
++gpu_persist(void)
++{
++	if (arena_size > ARENA_MAX || arena_size <= ARENA_PT_SIZE || (arena_pa | arena_size) & 0xffff) {
++		printf("SWEET GPU: bad arena 0x%llx size 0x%llx\n", arena_pa, arena_size);
++		return -1;
++	}
++	arena_va = ml_io_map_wcomb((vm_offset_t)arena_pa, (vm_size_t)arena_size);
++	if (!arena_va) {
++		printf("SWEET GPU: cannot map the arena at 0x%llx\n", arena_pa);
++		return -1;
++	}
++	wr(CB1 + 0x30, (2u << 12) | (1u << 23) | 25u);		/* TCR: T0SZ 25, 39-bit VAs */
++	cb1_tlb_flush();
++	wr(PV(P_SCRATCH) + FENCE_OFF, 0);
++	fence_seq = 0;
++	gpu_kept = true;
++	printf("SWEET GPU: persistent: arena 0x%llx-0x%llx (%llu MiB), cp context 39-bit\n", arena_pa,
++	    arena_pa + arena_size, arena_size >> 20);
++	if (gpu_selftest()) {
++		printf("SWEET GPU: self-test FAILED, GPU not offered to userland\n");
++		return 0;		/* stay up for inspection; not ready */
++	}
++	gpu_ready = true;
++	printf("SWEET GPU: READY: submissions and fences work, GPU kept up\n");
++	return 0;
++}
++
+ static void
+ cp_stage(void)
+ {
+@@ -822,6 +1151,10 @@ cp_stage(void)
+ 				printf("SWEET GPU: %s: mem_write 0x%08x (want 0x5ee70001), cache_flush_ts 0x%08x (want 0x600d0001),"
+ 				    " rbbm_int_0 0x%x\n", pass ? "CP TEST PASSED, the GPU ran our commands" : "CP TEST FAILED",
+ 				    m, t, rd(GR(RBBM_INT_0_STATUS)));
++				if (pass && gpu_level >= 3 && gpu_persist() == 0) {
++					gpu_kept = true;
++					return;			/* zap, GPU_SET and GX stay on */
++				}
+ 			}
+ 			uint64_t res;
+ 			int64_t rc = scm_pas(6, 0x1, 0, 0, &res);			/* PAS SHUTDOWN */
+@@ -863,6 +1196,9 @@ gx_up_and_back(void)
+ 		    rbbm, c1 - c0);
+ 		if (gpu_level >= 2) {
+ 			cp_stage();
++			if (gpu_kept) {
++				return;			/* sweetgpu=3: no slumber */
++			}
+ 		}
+ 	} else {
+ 		printf("SWEET GPU: gx not up, core registers not read\n");
+@@ -922,11 +1258,14 @@ a630_thread(void *arg __unused, wait_result_t wr_ __unused)
+ 				}
+ 			}
+ 		}
+-		/* edi194: a running GMU cannot be reloaded; park it. */
+-		wr(G(GMU_SYSRESET), 1);
++		/* edi194: a running GMU cannot be reloaded; park it (unless it is kept up). */
++		if (!gpu_kept) {
++			wr(G(GMU_SYSRESET), 1);
++		}
+ 	}
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+-	printf("SWEET GPU: bring-up finished in %llu ms, GMU back in reset\n", ns / 1000000);
++	printf("SWEET GPU: bring-up finished in %llu ms, %s\n", ns / 1000000,
++	    gpu_kept ? "GPU kept up" : "GMU back in reset");
+ out:
+ 	(void)thread_terminate(current_thread());
+ 	thread_block(THREAD_CONTINUE_NULL);
+@@ -941,6 +1280,7 @@ sweet_a630_init(void)
+ 	}
+ 	gpu_level = on;
+ 	PE_parse_boot_argn("sweetgpupool", &pool_pa, sizeof(pool_pa));
++	PE_parse_boot_argn("sweetgpuarena", &arena_size, sizeof(arena_size));
+ 	printf("SWEET GPU: Adreno 630 bring-up (sweetgpu=%u), GMU memory at 0x%llx\n", on, pool_pa);
+ 	thread_t thread;
+ 	if (kernel_thread_start(a630_thread, NULL, &thread) == KERN_SUCCESS) {

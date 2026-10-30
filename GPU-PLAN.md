@@ -83,11 +83,8 @@ Steps, each its own patch and phone test (`fastboot boot`, USB log):
 
 Then Phase 3 (metal2vulkan + SweetMetal2.bundle on CI) and Phase 4 (`sweetmtl=2`) as above.
 
-**At the end of the GPU milestone (user request, 2026-10-30): investigate vulkan2metal.** Note the
-direction: metal2vulkan (Phase 3) implements *Metal on top of Vulkan*, which is what iOS itself and its apps
-need, since they only speak Metal. A vulkan2metal layer (MoltenVK-style) runs *Vulkan apps on top of Metal*;
-on this port that would only matter for Vulkan software (games, emulators, ports) once Metal works, or as a
-cross-check of our Metal. The investigation decides whether either use is worth it.
+**metal2vulkan (Phase 3) is the user's priority** (clarified 2026-10-30: "vulkan2metal" meant metal2vulkan,
+Metal implemented on Vulkan, the stack ios-flame runs).
 
 ## Log
 
@@ -176,3 +173,10 @@ cross-check of our Metal. The investigation decides whether either use is worth 
   shutdown 0. With GPU_SET cleared first, **the slumber OOB is now acked and there is no CM3 fault** (the fault
   in stage 4 came from slumbering without the GPU_SET/clear pair). Whole bring-up 163 ms; iOS reaches
   SpringBoard. USB came up later than usual on this boot (user saw it after a few minutes); not yet explained.
+- **Kernel patch 0097 (written 2026-10-30): Phase 2.1, `sweetgpu=3`.** After the CP test passes: no zap shutdown,
+  GPU_SET kept, no slumber, GMU left running. CB1 widened to T0SZ 25 (39-bit GPU VA). Arena 256 MiB at
+  0xb1000000 (`sweetgpuarena=` size, max 1 GiB; free per the live DT: nothing reserved above 0xad200000 except
+  Linux-only dynamic pools), WC: first 4 MiB page tables (on-demand L2/L3), then 64 KiB buffer chunks. Kernel API
+  for 2.2: `sweet_gpu_bo_alloc/free`, `sweet_gpu_map/unmap` (4 KiB, CB1 TLB flush), `sweet_gpu_submit`
+  (CP_INDIRECT_BUFFER + CACHE_FLUSH_TS fence at scratch+0x100, ring-space wait), `sweet_gpu_wait` (hang report
+  with CB1 FSR/FAR). Self-test: 100 sequential IBs (two MEM_WRITEs each) + 50 queued IBs, then READY.
