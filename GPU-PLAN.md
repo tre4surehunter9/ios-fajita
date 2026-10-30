@@ -74,3 +74,8 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   accesses from the abort syndrome; writeback forms have no valid syndrome (ISV=0), so it resets the SoC.
   **Rule: every MMIO access the GPU code makes to the SMMU must be a plain `ldr/str [xN]`** (the shim now
   uses inline-asm accessors; the kernel patches must do the same, never plain volatile pointers).
+- **Stage 3 result (2026-10-30): PASS, the GMU talks HFI through our SMMU.** SMR0 `0x80000005`, SMR1
+  `0x80000004`, both S2CR `0x300`, sGFSR 0, TLB sync 0. `HFI_CTRL_STATUS` 1 (version info 0 = legacy v1).
+  INIT ACK `0x0002047E` error 0; FW_VERSION ACK `0x0012047E`, **firmware version `0x10060000` (1.6)**; TEST ACK
+  `0x0022047E` data `0x0E550E55`. GMU parked in reset after. Next: stage 4, the GX side (GMU boot OOB / GX
+  rail on, SPTPRAC, then GPU core registers RBBM_STATUS / CP_ALWAYS_ON readable).
