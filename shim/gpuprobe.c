@@ -300,10 +300,6 @@ static void gmu_boot(void)
 		bad += rd32(GMU + GMU_ITCM + 4 * i) != fw[i];
 	con_hex2(bad ? " FW MISMATCH" : " fw ok", "samples bad=", bad, "dtcm ver=", rd32(GMU + GMU_DTCM_VERSION));
 
-	con_str("GPU", "stage 3: smmu + hfi table");
-	int smmu_ok = smmu_setup() == 0;
-	if (smmu_ok)
-		hfi_table();
 	gmu_set(" tcm ret", GMU_TCM_RET, 1);
 	gmu_set(" init res", GMU_FW_INIT_RESULT, 0);
 	gmu_set(" boot cfg", GMU_BOOT_CONFIG, 2);
@@ -329,8 +325,23 @@ static void gmu_boot(void)
 		delay_us(1000);
 	}
 	con_hex2(res == 0xbabeface ? "GMU RUNS" : "GMU NO", "init=", res, "sysrst=", rd32(GMU + GMU_SYSRESET));
-	if (res == 0xbabeface && smmu_ok)
-		hfi_handshake();
+	/*
+	 * Stage 3 only with the GMU running (the order edi194 logged working):
+	 * the SMMU's stream table sits behind its bus clock, gcc gpu_memnoc_gfx,
+	 * which stage 1 left halted. 0089-run: the first SMR write with it halted
+	 * reset the SoC. Skip instead of hanging if it is still off.
+	 */
+	uint32_t memnoc = rd32(GCC + 0x7100c);
+	con_hex2(" memnoc", "cbcr=", memnoc, "snoc=", rd32(GCC + 0x71018));
+	if (res == 0xbabeface && (memnoc & CLK_OFF)) {
+		con_str("GPU", "memnoc_gfx still halted: SMMU skipped");
+	} else if (res == 0xbabeface) {
+		con_str("GPU", "stage 3: smmu + hfi table");
+		if (smmu_setup() == 0) {
+			hfi_table();
+			hfi_handshake();
+		}
+	}
 	/* Leave the GMU parked in reset (edi194: a running core cannot be reloaded). */
 	wr32(GMU + GMU_SYSRESET, 1);
 	con_str("GPU", "stage 2 done, GMU back in reset");
