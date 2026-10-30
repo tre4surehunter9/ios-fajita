@@ -43,3 +43,10 @@ The OnePlus 6 and 6T share the zap (mainline's fajita DT uses the enchilada path
 4. **System-wide:** `sweetmtl=2`, so CoreAnimation renders through Metal; measure, then fix.
 
 Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU-rendered GUI from booting.
+
+## Log
+
+- **Stage 1 (shim, 2026-10-29):** `GPUPROBE=1 BOARD=fajita shim/build.sh` builds a no-payload shim that runs
+  `shim/gpuprobe.c`: GCC GPU clocks, CX GDSC on, gmu_clk_src at XO, cxo/cx_gmu/ahb clocks, a GMU
+  register read and an ITCM write/read-back test. Output on screen; no SMMU or GX access. Boot it
+  with `fastboot boot shim/out-fajita-gpu/shim-boot.img` (iOS is not involved).

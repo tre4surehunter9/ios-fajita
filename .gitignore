@@ -6,6 +6,7 @@ recovery/
 research/
 shim/out/
 shim/out-fajita/
+shim/out-fajita-gpu/
 xnu/out/
 xnu/out-*/
 __pycache__/

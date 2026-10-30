@@ -12,6 +12,7 @@
 #include "loader.h"
 #include "ufs.h"
 #include "fdt.h"
+#include "gpuprobe.h"
 
 #define RESTART_BOOTLOADER	0x77665500U
 #define PSHOLD			0x0c264000UL
@@ -361,6 +362,13 @@ static void __attribute__((noreturn)) fajita_probe(uint64_t dtb)
 	uint64_t base[8], size[8], v;
 
 	stage = "probe";
+#if defined(SHIM_GPUPROBE)
+	/* GPU probe build: the GPU stage replaces the hardware report. */
+	stage = "gpu";
+	gpuprobe_run();
+	for (;;)
+		__asm__ volatile("wfe");
+#endif
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(rd32(dtb)) : 0);
 	int n = fdt_memory_ranges(dtb, base, size, 8);
 	con_hex2("MEMORY", "nodes/ranges=", n, 0, 0);

@@ -13,19 +13,21 @@ OBJCOPY=${CROSS}objcopy
 CFLAGS="-O2 -ffreestanding -nostdlib -fno-pic -mgeneral-regs-only -mstrict-align -fno-stack-protector -Wall -Wextra"
 case "$BOARD" in
 sweet)	OUT=out; BOARDDEF= ;;
-fajita)	OUT=out-fajita; BOARDDEF=-DBOARD_FAJITA ;;
+fajita)	OUT=out-fajita; BOARDDEF=-DBOARD_FAJITA
+	# GPUPROBE=1: the no-payload shim runs the GPU probe (shim/gpuprobe.c)
+	if [ -n "${GPUPROBE:-}" ]; then OUT=out-fajita-gpu; BOARDDEF="$BOARDDEF -DSHIM_GPUPROBE"; fi ;;
 *)	echo "error: unknown BOARD=$BOARD" >&2; exit 1 ;;
 esac
 mkdir -p $OUT
-for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c; do
+for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c gpuprobe.c; do
 	$CC $CFLAGS $BOARDDEF -c $f -o $OUT/${f%.*}.o
 done
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$(${CROSS}readelf -r $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/ufs.o | grep -c ABS64 || true)
+abs=$(${CROSS}readelf -r $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/ufs.o $OUT/gpuprobe.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 $CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
-	$OUT/start.o $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/ufs.o -o $OUT/shim.elf
+	$OUT/start.o $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/ufs.o $OUT/gpuprobe.o -o $OUT/shim.elf
 $OBJCOPY -O binary $OUT/shim.elf $OUT/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$(${CROSS}nm $OUT/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
