@@ -85,3 +85,8 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   cmd-db reading), SPTPRAC on (`0x778000`, status & 0x38 == 0x28), GX GDSC check, then RBBM_STATUS and the
   GMU always-on counter (only if SPTPRAC is up and the GX GDSC is on), then the legacy slumber. The ARC
   index and gfx address are hardcoded from edi194's log, not read from cmd-db by us (to do in the kernel).
+- **Stage 4 result (2026-10-30): the GPU core answers.** PDC enabled (`0x80000001`); RSC wake ack 0, sequencer
+  idle (as edi194). Boot OOB acked: pstate `0xF`, SPTPRAC `0x28`; GX GDSCR `0xF8222000` (on by itself);
+  **`RBBM_STATUS = 0x1`** (idle) with no bus hang. The always-on tick count and the slumber detail ran off the
+  screen edge; the slumber reported incomplete. Labels shortened and the slumber split into SPTPRAC-off and
+  OOB lines for the next run.

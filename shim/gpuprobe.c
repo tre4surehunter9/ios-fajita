@@ -370,7 +370,7 @@ static void gx_stage(void)
 		uint32_t c0 = rd32(GMU + GMU_AO_COUNTER_L);
 		delay_us(2000);
 		uint32_t c1 = rd32(GMU + GMU_AO_COUNTER_L);
-		con_hex2("GPU CORE", "rbbm_status=", rbbm, "ao ticks/2ms=", c1 - c0);
+		con_hex2("GPU CORE", "rbbm=", rbbm, "ao/2ms=", c1 - c0);
 	} else {
 		con_str("GPU", "GX not up: core registers not read");
 	}
@@ -384,8 +384,10 @@ static void gx_stage(void)
 	rc = oob_boot_slumber();
 	wr32(GMU + GMU_H2G_SET, 1u << OOB_BOOT_SLUMBER_ACK);	/* a6xx_gmu_clear_oob */
 	wr32(GMU + GMU_AO_FENCE_CTRL, 0);
-	con_hex2(rc || off ? " slumber INCOMPLETE" : " slumber", "pstate=", rd32(GMU + GMU_RPMH_PSTATE),
-	    "sptp=", rd32(GMU + GMU_SPTPRAC_STATUS));
+	con_hex2(off ? " sptp off FAIL" : " sptp off", "st=", rd32(GMU + GMU_SPTPRAC_STATUS),
+	    "gdscr=", rd32(GPUCC + GPUCC_GX_GDSCR));
+	con_hex2(rc ? " slumber NOACK" : " slumber ok", "ps=", rd32(GMU + GMU_RPMH_PSTATE),
+	    "info=", rd32(GMU + GMU_G2H_INFO));
 }
 
 static int hfi_handshake(void)
