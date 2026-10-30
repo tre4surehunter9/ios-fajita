@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
-index 2ef1608..bd67460 100644
+index 2ef1608..321be6e 100644
 --- a/bsd/dev/sweet_a630.c
 +++ b/bsd/dev/sweet_a630.c
 @@ -17,6 +17,15 @@
@@ -18,11 +18,8 @@ index 2ef1608..bd67460 100644
   * Every value is the one shim/gpuprobe.c (stages 1-4) proved on the phone;
   * that file and GPU-PLAN.md have the sources (mainline a6xx_gmu.c /
   * a6xx_hfi.c / gpucc-sdm845.c / sdm845.dtsi for facts, edi194's notes for
-@@ -44,11 +53,14 @@
- #include <kern/sched_prim.h>
- #include <mach/mach_time.h>
+@@ -46,9 +55,13 @@
  #include <machine/machine_routines.h>
-+#include <machine/memory_types.h>
  #include <pexpert/pexpert.h>
  #include <pexpert/device_tree.h>
 +#include <kern/locks.h>
@@ -30,10 +27,12 @@ index 2ef1608..bd67460 100644
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
  extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
 +extern vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, unsigned int);
++/* VM_WIMG_WCOMB (osfmk/arm/memory_types.h): its VM_MEM_* parts are not visible from bsd/. */
++#define SWEET_WIMG_WCOMB	0x6
  extern bool sweet_board_is(const char *want);
  extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
  extern void thread_deallocate(thread_t);
-@@ -57,7 +69,8 @@ extern void _disable_preemption(void);
+@@ -57,7 +70,8 @@ extern void _disable_preemption(void);
  extern void _enable_preemption(void);
  void sweet_a630_init(void);
  
@@ -43,7 +42,7 @@ index 2ef1608..bd67460 100644
  
  /* ---- register windows ---- */
  
-@@ -761,6 +774,330 @@ zap_load(const uint8_t *mbn, uint32_t len)
+@@ -761,6 +775,330 @@ zap_load(const uint8_t *mbn, uint32_t len)
  	return (rc || res) ? -1 : 0;
  }
  
@@ -350,7 +349,7 @@ index 2ef1608..bd67460 100644
 +		printf("SWEET GPU: bad arena 0x%llx size 0x%llx\n", arena_pa, arena_size);
 +		return -1;
 +	}
-+	arena_va = ml_io_map_unmappable((vm_offset_t)arena_pa, (vm_size_t)arena_size, VM_WIMG_WCOMB);
++	arena_va = ml_io_map_unmappable((vm_offset_t)arena_pa, (vm_size_t)arena_size, SWEET_WIMG_WCOMB);
 +	if (!arena_va) {
 +		printf("SWEET GPU: cannot map the arena at 0x%llx\n", arena_pa);
 +		return -1;
@@ -374,7 +373,7 @@ index 2ef1608..bd67460 100644
  static void
  cp_stage(void)
  {
-@@ -822,6 +1159,10 @@ cp_stage(void)
+@@ -822,6 +1160,10 @@ cp_stage(void)
  				printf("SWEET GPU: %s: mem_write 0x%08x (want 0x5ee70001), cache_flush_ts 0x%08x (want 0x600d0001),"
  				    " rbbm_int_0 0x%x\n", pass ? "CP TEST PASSED, the GPU ran our commands" : "CP TEST FAILED",
  				    m, t, rd(GR(RBBM_INT_0_STATUS)));
@@ -385,7 +384,7 @@ index 2ef1608..bd67460 100644
  			}
  			uint64_t res;
  			int64_t rc = scm_pas(6, 0x1, 0, 0, &res);			/* PAS SHUTDOWN */
-@@ -863,6 +1204,9 @@ gx_up_and_back(void)
+@@ -863,6 +1205,9 @@ gx_up_and_back(void)
  		    rbbm, c1 - c0);
  		if (gpu_level >= 2) {
  			cp_stage();
@@ -395,7 +394,7 @@ index 2ef1608..bd67460 100644
  		}
  	} else {
  		printf("SWEET GPU: gx not up, core registers not read\n");
-@@ -922,11 +1266,14 @@ a630_thread(void *arg __unused, wait_result_t wr_ __unused)
+@@ -922,11 +1267,14 @@ a630_thread(void *arg __unused, wait_result_t wr_ __unused)
  				}
  			}
  		}
@@ -413,7 +412,7 @@ index 2ef1608..bd67460 100644
  out:
  	(void)thread_terminate(current_thread());
  	thread_block(THREAD_CONTINUE_NULL);
-@@ -941,6 +1288,7 @@ sweet_a630_init(void)
+@@ -941,6 +1289,7 @@ sweet_a630_init(void)
  	}
  	gpu_level = on;
  	PE_parse_boot_argn("sweetgpupool", &pool_pa, sizeof(pool_pa));
