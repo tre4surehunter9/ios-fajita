@@ -122,3 +122,12 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   MEM_SETUP 0x8c415000 / AUTH_AND_RESET, SMC with the QCOM_SCM_INTERRUPTED resume), CP_SET_SECURE_MODE 0,
   NOP + CP_MEM_WRITE 0x5ee70001 + CACHE_FLUSH_TS 0x600d0001 read back from scratch, PAS SHUTDOWN, GPU_SET clear,
   then the existing slumber.
+- **0096 on the phone (2026-10-30, image 0096g, `sweetgpu=2`): PHASE 1 COMPLETE, the GPU runs our commands.**
+  CB1 SMR2 `0x80000000` / S2CR2 `0x301`, sGFSR 0; OOB GPU_SET acked; CP before: all zero, cp_status1 `0x1000000`;
+  configured rb_cntl `0x800020c`, sqe_base `0x40010000`, rb_base `0x40000000`; SQE on (`0x81004000`);
+  **CP_ME_INIT rptr = wptr = 9**; zap from the pmOS `.mbn`: INIT_IMAGE (6684-byte metadata) / MEM_SETUP 0x8c415000
+  size 0x1000 / AUTH_AND_RESET all `0 result 0`; CP_SET_SECURE_MODE 0 (rptr 11); NOP + MEM_WRITE +
+  CACHE_FLUSH_TS (rptr 21): **mem_write 0x5ee70001, cache_flush_ts 0x600d0001, rbbm_int_0 0, hw_fault 0**; zap
+  shutdown 0. With GPU_SET cleared first, **the slumber OOB is now acked and there is no CM3 fault** (the fault
+  in stage 4 came from slumbering without the GPU_SET/clear pair). Whole bring-up 163 ms; iOS reaches
+  SpringBoard. USB came up later than usual on this boot (user saw it after a few minutes); not yet explained.
