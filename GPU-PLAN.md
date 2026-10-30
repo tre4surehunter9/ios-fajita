@@ -68,3 +68,9 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   0xC01067 / TCR 0x802020, then nothing: the first S2CR/SMR write reset the SoC. The SMMU's bus clock (gcc
   gpu_memnoc_gfx) was halted (stage 1). Reordered: boot the GMU first (edi194's order), check memnoc_gfx, and
   only then touch the stream table.
+- **Stage 3 second run (2026-10-30): same reset, but memnoc_gfx running** (`cbcr 0x4221`, snoc `0x1`), so the
+  clock was not the cause. The disassembly was: the S2CR read-back compiled to `ldr w4, [x20], #4`
+  (post-index writeback). The hypervisor traps the GPU SMMU's stream table (sCR0 bit 21) and emulates
+  accesses from the abort syndrome; writeback forms have no valid syndrome (ISV=0), so it resets the SoC.
+  **Rule: every MMIO access the GPU code makes to the SMMU must be a plain `ldr/str [xN]`** (the shim now
+  uses inline-asm accessors; the kernel patches must do the same, never plain volatile pointers).

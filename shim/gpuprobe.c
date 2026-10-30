@@ -41,11 +41,21 @@
 
 #define CLK_OFF		(1u << 31)
 
-static inline uint32_t rd32(uintptr_t a) { return *(volatile uint32_t *)a; }
+/*
+ * Plain [xN] loads and stores only. The hypervisor traps the GPU SMMU's
+ * stream table (sCR0 bit 21) and emulates each access from the abort
+ * syndrome; a writeback form (`ldr w4, [x20], #4`, which gcc folded into the
+ * S2CR read-back) carries no syndrome and the hypervisor resets the SoC.
+ */
+static inline uint32_t rd32(uintptr_t a)
+{
+	uint32_t v;
+	__asm__ volatile("ldr %w0, [%1]" : "=r"(v) : "r"(a) : "memory");
+	return v;
+}
 static inline void wr32(uintptr_t a, uint32_t v)
 {
-	*(volatile uint32_t *)a = v;
-	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("str %w0, [%1]\n\tdsb sy" :: "r"(v), "r"(a) : "memory");
 }
 
 static void delay_us(unsigned us)
@@ -125,8 +135,7 @@ static void gmu_set(const char *name, uint32_t off, uint32_t val)
 
 static inline void wr64(uintptr_t a, uint64_t v)
 {
-	*(volatile uint64_t *)a = v;
-	__asm__ volatile("dsb sy" ::: "memory");
+	__asm__ volatile("str %0, [%1]\n\tdsb sy" :: "r"(v), "r"(a) : "memory");
 }
 
 static void map_pages(uintptr_t l3, uint32_t va, uintptr_t pa, unsigned pages)
@@ -326,11 +335,8 @@ static void gmu_boot(void)
 	}
 	con_hex2(res == 0xbabeface ? "GMU RUNS" : "GMU NO", "init=", res, "sysrst=", rd32(GMU + GMU_SYSRESET));
 	/*
-	 * Stage 3 only with the GMU running (the order edi194 logged working):
-	 * the SMMU's stream table sits behind its bus clock, gcc gpu_memnoc_gfx,
-	 * which stage 1 left halted. Stage 3's first run (SMMU before the GMU
-	 * boot) reset the SoC at the first S2CR/SMR write; a halted memnoc is the
-	 * suspected cause. Skip instead of resetting if it is still off.
+	 * Stage 3 with the GMU running. The SMMU sits behind gcc gpu_memnoc_gfx,
+	 * which stage 1 left halted; skip rather than touch it if it still is.
 	 */
 	uint32_t memnoc = rd32(GCC + 0x7100c);
 	con_hex2(" memnoc", "cbcr=", memnoc, "snoc=", rd32(GCC + 0x71018));
