@@ -198,6 +198,7 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0090 | fajita: route the USB stream through a translation-off SMMU context bank (Linux arm-smmu-qcom bypass quirk), which makes the USB console work |
 | 0091 | `sweetbusy=N`: log IOServices that stay busy (registry never quiet); USB data-endpoint events no longer echo into the live log |
 | 0092 | IOKit daemon stand-in: release the registry root busy count that waits for kernelmanagerd (absent on iOS), so the registry goes quiet (`sweetiokitd=N`, fajita default 20 s) |
+| 0093 | fajita USB cold start (boot from boot_a): RPMh rails, GDSC, clocks, resets, QUSB2 init, DWC3 device mode (`sweetusbinit=0` skips) |
 
 ## Key hardware facts (OnePlus 6T)
 

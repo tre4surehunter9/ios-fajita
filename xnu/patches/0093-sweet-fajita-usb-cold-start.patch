@@ -1,0 +1,173 @@
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 2e5d847..34dfa88 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -341,12 +341,23 @@ rh_send(uint32_t address, unsigned mv)
+ int
+ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ {
+-	/* Board-specific helper: one touch rail per board, within its DT limits. */
+-	bool fajita = sweet_board_is("oneplus,fajita");
+-	const char *want = fajita ? "ldoa28" : "ldoc11";
+-	unsigned lo = fajita ? 2856 : 2950, hi = fajita ? 3008 : 3400;
+-	if (!res || strcmp(res, want) || mv < lo || mv > hi) {
+-		printf("SWEET RPMH: expected %s and %u..%u mV\n", want, lo, hi);
++	/* Board-specific allowlist: only these rails, within their DT limits. */
++	static const struct { const char *res; unsigned lo, hi; bool fajita; } allowed[] = {
++		{ "ldoc11", 2950, 3400, false },	/* sweet touch */
++		{ "ldoa28", 2856, 3008, true },		/* fajita touch VDD */
++		{ "ldoa1", 880, 880, true },		/* fajita USB PHY vdd (shared with UFS) */
++		{ "ldoa12", 1800, 1800, true },		/* fajita USB PHY vdda-pll */
++		{ "ldoa24", 3088, 3088, true },		/* fajita USB PHY vdda-phy-dpdm */
++	};
++	bool fajita = sweet_board_is("oneplus,fajita"), ok = false;
++	for (unsigned i = 0; res && i < sizeof(allowed) / sizeof(allowed[0]); i++) {
++		if (allowed[i].fajita == fajita && !strcmp(res, allowed[i].res) &&
++		    mv >= allowed[i].lo && mv <= allowed[i].hi) {
++			ok = true;
++		}
++	}
++	if (!ok) {
++		printf("SWEET RPMH: %s %u mV not allowed on this board\n", res ? res : "(null)", mv);
+ 		return EINVAL;
+ 	}
+ 	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 32d3ad2..214130c 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -245,6 +245,117 @@ usb_rd(vm_offset_t base, uint32_t off)
+ 	return v;
+ }
+ 
++/*
++ * fajita cold start: booted from boot_a (not fastboot boot), ABL never ran its
++ * USB stack, so the USB30_PRIM GDSC and every USB clock are off and the PHY and
++ * DWC3 are at reset values. Bring them up the way mainline does: RPMh supplies
++ * (sdm845-oneplus-common.dtsi usb_1_hsphy: L1A 0.88 V, L12A 1.8 V, L24A 3.088 V),
++ * GDSC (gcc-sdm845.c usb30_prim_gdsc 0xf004), master clock 133.33 MHz (GPLL0/4.5,
++ * RCG 0xf018), branch clocks, BCRs (0xf000, 0x12000), QUSB2 v2 init table
++ * (phy-qcom-qusb2.c qusb2_v2_init_tbl + imp-res-offset 8), UTMI as pipe clock
++ * (dwc3-qcom.c dwc3_qcom_select_utmi_clk), DWC3 soft reset into the device-mode
++ * values ABL uses (GUSB2PHYCFG 0x2400, GCTL 0x00112000). sweetusbinit=0 skips it.
++ */
++extern int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++
++static bool
++usb_wait_clear(vm_offset_t base, uint32_t off, uint32_t mask, unsigned us)
++{
++	for (unsigned i = 0; i < us; i++) {
++		if (!(usb_rd(base, off) & mask)) {
++			return true;
++		}
++		delay(1);
++	}
++	return false;
++}
++
++static void
++usb_wr(vm_offset_t base, uint32_t off, uint32_t val)
++{
++	*(volatile uint32_t *)(base + off) = val;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++static void
++usb_cold_start(vm_offset_t gcc, const struct usb_clk *clk)
++{
++	static const struct { const char *res; unsigned mv; } rails[] = {
++		{ "ldoa1", 880 }, { "ldoa12", 1800 }, { "ldoa24", 3088 },
++	};
++	for (unsigned i = 0; i < sizeof(rails) / sizeof(rails[0]); i++) {
++		int err = sweet_rpmh_vreg_enable(rails[i].res, rails[i].mv);
++		printf("SWEET USB: cold start: %s %u mV -> %d\n", rails[i].res, rails[i].mv, err);
++	}
++	/* GDSC: clear SW_COLLAPSE, wait for PWR_ON. */
++	usb_wr(gcc, GCC_USB30_PRIM_GDSCR, usb_rd(gcc, GCC_USB30_PRIM_GDSCR) & ~1u);
++	for (unsigned i = 0; i < 1000 && !(usb_rd(gcc, GCC_USB30_PRIM_GDSCR) & (1u << 31)); i++) {
++		delay(1);
++	}
++	/* Master clock RCG: GPLL0 main (src 1) / 4.5 (hid 8) = 133.33 MHz, then update. */
++	uint32_t cfg = usb_rd(gcc, 0xf018 + 4);
++	usb_wr(gcc, 0xf018 + 4, (cfg & ~(0x371fu | (1u << 20))) | (1u << 8) | 8u);
++	usb_wr(gcc, 0xf018, usb_rd(gcc, 0xf018) | 1u);
++	bool rcg = usb_wait_clear(gcc, 0xf018, 1u, 1000);
++	/* Branch clocks: CBCR enable bit 0, then CLK_OFF (bit 31) must clear. */
++	unsigned stuck = 0;
++	for (unsigned i = 0; i < USB_NCLK; i++) {
++		usb_wr(gcc, clk[i].off, usb_rd(gcc, clk[i].off) | 1u);
++		if (!usb_wait_clear(gcc, clk[i].off, CBCR_CLK_OFF, 1000)) {
++			stuck |= 1u << i;
++		}
++	}
++	printf("SWEET USB: cold start: GDSC %#x RCG %s cfg %#x, clocks stuck mask %#x\n",
++	    usb_rd(gcc, GCC_USB30_PRIM_GDSCR), rcg ? "ok" : "TIMEOUT", usb_rd(gcc, 0xf018 + 4), stuck);
++	/* Block resets: controller and PHY. */
++	usb_wr(gcc, 0xf000, 1);
++	usb_wr(gcc, 0x12000, 1);
++	delay(100);
++	usb_wr(gcc, 0x12000, 0);
++	usb_wr(gcc, 0xf000, 0);
++	delay(100);
++	/* QUSB2 v2: disable, program, enable, check CORE_READY (PLL_STATUS bit 0). */
++	vm_offset_t phy = ml_io_map(QUSB2_PA, QUSB2_SIZE);
++	if (phy != 0) {
++		static const uint16_t tbl[][2] = {
++			{ 0x004, 0x03 }, { 0x18c, 0x7c }, { 0x02c, 0x80 }, { 0x184, 0x0a },
++			{ 0x0b4, 0x19 }, { 0x194, 0x40 }, { 0x198, 0x20 }, { 0x214, 0x21 },
++			{ 0x220, 0x08 },	/* IMP_CTRL1: 0x00 | imp-res-offset 8 */
++			{ 0x224, 0x58 }, { 0x240, 0x30 }, { 0x244, 0x29 }, { 0x248, 0xca },
++			{ 0x24c, 0x04 }, { 0x250, 0x03 }, { 0x23c, 0x00 },
++		};
++		usb_wr(phy, 0x210, usb_rd(phy, 0x210) | 0x23u);
++		for (unsigned i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++) {
++			usb_wr(phy, tbl[i][0], tbl[i][1]);
++		}
++		usb_wr(phy, 0x210, usb_rd(phy, 0x210) & ~1u);
++		delay(300);
++		printf("SWEET USB: cold start: QUSB2 PWR_CTRL1 %#x PLL_STATUS %#x (core %s)\n",
++		    usb_rd(phy, 0x210) & 0xffu, usb_rd(phy, 0x1a0) & 0xffu,
++		    (usb_rd(phy, 0x1a0) & 1u) ? "ready" : "NOT ready");
++	}
++	/* Qualcomm wrapper: UTMI clock as pipe clock (USB 2 only). */
++	vm_offset_t qs = ml_io_map(0x0a6f8800, 0x100);
++	if (qs != 0) {
++		usb_wr(qs, 0x08, usb_rd(qs, 0x08) | (1u << 8));
++		delay(500);
++		usb_wr(qs, 0x08, usb_rd(qs, 0x08) | (1u << 0) | (1u << 3));
++		delay(500);
++		usb_wr(qs, 0x08, usb_rd(qs, 0x08) & ~(1u << 8));
++	}
++	/* DWC3 core: soft reset core and USB2 PHY interface, then device mode. */
++	vm_offset_t dwc = ml_io_map(DWC3_PA, DWC3_SIZE);
++	if (dwc != 0) {
++		usb_wr(dwc, 0xc110, usb_rd(dwc, 0xc110) | (1u << 11));		/* GCTL.CORESOFTRESET */
++		usb_wr(dwc, 0xc200, usb_rd(dwc, 0xc200) | (1u << 31));		/* GUSB2PHYCFG.PHYSOFTRST */
++		delay(100);
++		usb_wr(dwc, 0xc200, 0x00002400);
++		usb_wr(dwc, 0xc110, 0x00112000);
++		printf("SWEET USB: cold start: DWC3 GSNPSID %#x GCTL %#x GUSB2PHYCFG %#x\n",
++		    usb_rd(dwc, 0xc120), usb_rd(dwc, 0xc110), usb_rd(dwc, 0xc200));
++	}
++}
++
+ void
+ sweet_usb_probe(void)
+ {
+@@ -279,6 +390,16 @@ sweet_usb_probe(void)
+ 	}
+ 	/* DWC3 registers need the GDSC, the master clock and the config-NoC path. */
+ 	clocks_on = (gdscr & (1u << 31)) && !(cbcr[0] & CBCR_CLK_OFF) && !(cbcr[3] & CBCR_CLK_OFF);
++	int cold = 1;
++	PE_parse_boot_argn("sweetusbinit", &cold, sizeof(cold));
++	if (!clocks_on && enabled >= 2 && cold && sweet_board_is("oneplus,fajita")) {
++		usb_cold_start(gcc, usb_cbcr);
++		gdscr = usb_rd(gcc, GCC_USB30_PRIM_GDSCR);
++		cbcr[0] = usb_rd(gcc, usb_cbcr[0].off);
++		cbcr[3] = usb_rd(gcc, usb_cbcr[3].off);
++		cbcr[5] = usb_rd(gcc, usb_cbcr[5].off);
++		clocks_on = (gdscr & (1u << 31)) && !(cbcr[0] & CBCR_CLK_OFF) && !(cbcr[3] & CBCR_CLK_OFF);
++	}
+ 	if (!clocks_on) {
+ 		printf("SWEET USB: controller unpowered or unclocked; DWC3 not read\n");
+ 		return;

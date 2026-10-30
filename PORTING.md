@@ -277,6 +277,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
 
 - v3 + the new boot_a: **confirmed by the user** (About shows the new values and about 110 GB).
 
+- **0093 (USB on normal boots):** a boot from boot_a leaves the USB block cold (edi194 logged GDSC
+  `0x00222001` off and all clocks off). 0093 runs a mainline-order bring-up when it finds it off:
+  RPMh L1A/L12A/L24A (allowlist extended), GDSC, master RCG 133.33 MHz, branches, BCRs, QUSB2
+  v2 table + imp-res-offset 8, UTMI pipe clock, DWC3 soft reset to GUSB2PHYCFG 0x2400 / GCTL
+  0x00112000. Untested. Known-good boot image kept as `shim-boot-0092a-known-good.img`.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
