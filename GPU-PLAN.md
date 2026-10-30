@@ -185,3 +185,8 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   mapping space; that allocation panics instead of failing). Fix folded into 0097: only the first 16 MiB (page
   tables + kernel buffers) get a kernel mapping; userland buffers come from the rest and are zeroed through a
   temporary mapping; 2.2 maps them into the client tasks.
+- **0097h (2026-10-30): same panic with 16 MiB** (`kmem_alloc(…, 16777216, …) failed with 3`). Cause:
+  `ml_io_map*` allocate from `io_submap`, which is **8 MiB for all drivers together** (osfmk/arm/io_map.c,
+  `IO_MAP_SIZE`). Fix in 0097: the arena is mapped whole with `ml_io_map_unmappable(pa, size, VM_WIMG_WCOMB)`
+  (kernel_map, KMA_DATA; ios-flame maps its GPU windows the same way). Rule: anything big goes through
+  ml_io_map_unmappable, never ml_io_map/ml_io_map_wcomb.

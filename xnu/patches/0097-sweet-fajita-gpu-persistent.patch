@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
-index 2ef1608..0e09662 100644
+index 2ef1608..bd67460 100644
 --- a/bsd/dev/sweet_a630.c
 +++ b/bsd/dev/sweet_a630.c
 @@ -17,6 +17,15 @@
@@ -18,19 +18,22 @@ index 2ef1608..0e09662 100644
   * Every value is the one shim/gpuprobe.c (stages 1-4) proved on the phone;
   * that file and GPU-PLAN.md have the sources (mainline a6xx_gmu.c /
   * a6xx_hfi.c / gpucc-sdm845.c / sdm845.dtsi for facts, edi194's notes for
-@@ -46,9 +55,11 @@
+@@ -44,11 +53,14 @@
+ #include <kern/sched_prim.h>
+ #include <mach/mach_time.h>
  #include <machine/machine_routines.h>
++#include <machine/memory_types.h>
  #include <pexpert/pexpert.h>
  #include <pexpert/device_tree.h>
 +#include <kern/locks.h>
  
  extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
  extern vm_offset_t ml_io_map_wcomb(vm_offset_t, vm_size_t);
-+extern void ml_io_unmap(vm_offset_t, vm_size_t);
++extern vm_offset_t ml_io_map_unmappable(vm_offset_t, vm_size_t, unsigned int);
  extern bool sweet_board_is(const char *want);
  extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
  extern void thread_deallocate(thread_t);
-@@ -57,7 +68,8 @@ extern void _disable_preemption(void);
+@@ -57,7 +69,8 @@ extern void _disable_preemption(void);
  extern void _enable_preemption(void);
  void sweet_a630_init(void);
  
@@ -40,7 +43,7 @@ index 2ef1608..0e09662 100644
  
  /* ---- register windows ---- */
  
-@@ -761,6 +773,345 @@ zap_load(const uint8_t *mbn, uint32_t len)
+@@ -761,6 +774,330 @@ zap_load(const uint8_t *mbn, uint32_t len)
  	return (rc || res) ? -1 : 0;
  }
  
@@ -57,12 +60,11 @@ index 2ef1608..0e09662 100644
 +#define ARENA_CHUNK		0x10000ULL
 +#define ARENA_MAX		0x40000000ULL	/* 1 GiB */
 +/*
-+ * Only this much of the arena has a kernel mapping (page tables + kernel
-+ * buffers): XNU's I/O mapping space cannot take 256 MiB in one piece (a
-+ * 256 MiB ml_io_map_wcomb panicked in kmem_alloc, KERN_NO_SPACE, run 0097g).
-+ * The rest is for userland buffers, mapped into the client tasks (2.2).
++ * The arena is mapped with ml_io_map_unmappable (kernel_map), not
++ * ml_io_map_wcomb: that one allocates from io_submap, which is only 8 MiB for
++ * every driver together (osfmk/arm/io_map.c IO_MAP_SIZE), and a 256 MiB or
++ * 16 MiB request there panics in kmem_alloc with KERN_NO_SPACE (runs 0097g/h).
 + */
-+#define ARENA_KMAP		0x1000000ULL	/* 16 MiB */
 +#define FENCE_OFF		0x100		/* in the scratch page */
 +#define GPU_VA_KERNEL		0x100000000ULL	/* self-test buffers */
 +
@@ -76,7 +78,7 @@ index 2ef1608..0e09662 100644
 +static LCK_MTX_DECLARE(sweet_gpu_lock, &sweet_gpu_grp);
 +
 +bool sweet_gpu_is_ready(void);
-+int sweet_gpu_bo_alloc(uint64_t size, uint64_t *pa, vm_offset_t *kva);	/* kva: NULL = no kernel mapping needed */
++int sweet_gpu_bo_alloc(uint64_t size, uint64_t *pa, vm_offset_t *kva);
 +void sweet_gpu_bo_free(uint64_t pa, uint64_t size);
 +int sweet_gpu_map(uint64_t iova, uint64_t pa, uint64_t size);
 +void sweet_gpu_unmap(uint64_t iova, uint64_t size);
@@ -90,7 +92,7 @@ index 2ef1608..0e09662 100644
 +	if (pa >= pool_pa && pa < pool_pa + POOL_SIZE) {
 +		return PV(pa - pool_pa);
 +	}
-+	if (arena_va && pa >= arena_pa && pa < arena_pa + ARENA_KMAP) {
++	if (arena_va && pa >= arena_pa && pa < arena_pa + arena_size) {
 +		return arena_va + (vm_offset_t)(pa - arena_pa);
 +	}
 +	return 0;
@@ -162,8 +164,7 @@ index 2ef1608..0e09662 100644
 +sweet_gpu_bo_alloc(uint64_t size, uint64_t *pa, vm_offset_t *kva)
 +{
 +	uint32_t n = (uint32_t)((size + ARENA_CHUNK - 1) / ARENA_CHUNK);
-+	/* Buffers the kernel touches come from the kernel-mapped part, the others from anywhere. */
-+	uint32_t total = (uint32_t)(((kva ? ARENA_KMAP : arena_size) - ARENA_PT_SIZE) / ARENA_CHUNK);
++	uint32_t total = (uint32_t)((arena_size - ARENA_PT_SIZE) / ARENA_CHUNK);
 +	if (!arena_va || n == 0 || n > total) {
 +		return -1;
 +	}
@@ -176,18 +177,9 @@ index 2ef1608..0e09662 100644
 +			lck_mtx_unlock(&sweet_gpu_lock);
 +			uint64_t off = ARENA_PT_SIZE + ARENA_CHUNK * first, len = ARENA_CHUNK * n;
 +			*pa = arena_pa + off;
-+			vm_offset_t z = kva ? arena_va + (vm_offset_t)off : ml_io_map_wcomb((vm_offset_t)*pa, (vm_size_t)len);
-+			if (!z) {
-+				sweet_gpu_bo_free(*pa, len);
-+				return -1;
-+			}
++			*kva = arena_va + (vm_offset_t)off;
 +			for (uint64_t o = 0; o < len; o += 8) {
-+				wr64(z + (vm_offset_t)o, 0);
-+			}
-+			if (kva) {
-+				*kva = z;
-+			} else {
-+				ml_io_unmap(z, (vm_size_t)len);
++				wr64(*kva + (vm_offset_t)o, 0);
 +			}
 +			return 0;
 +		}
@@ -358,11 +350,7 @@ index 2ef1608..0e09662 100644
 +		printf("SWEET GPU: bad arena 0x%llx size 0x%llx\n", arena_pa, arena_size);
 +		return -1;
 +	}
-+	if (arena_size < ARENA_KMAP) {
-+		printf("SWEET GPU: arena smaller than its kernel part (0x%llx)\n", ARENA_KMAP);
-+		return -1;
-+	}
-+	arena_va = ml_io_map_wcomb((vm_offset_t)arena_pa, (vm_size_t)ARENA_KMAP);
++	arena_va = ml_io_map_unmappable((vm_offset_t)arena_pa, (vm_size_t)arena_size, VM_WIMG_WCOMB);
 +	if (!arena_va) {
 +		printf("SWEET GPU: cannot map the arena at 0x%llx\n", arena_pa);
 +		return -1;
@@ -372,8 +360,8 @@ index 2ef1608..0e09662 100644
 +	wr(PV(P_SCRATCH) + FENCE_OFF, 0);
 +	fence_seq = 0;
 +	gpu_kept = true;
-+	printf("SWEET GPU: persistent: arena 0x%llx-0x%llx (%llu MiB, first %llu MiB kernel-mapped), cp context 39-bit\n",
-+	    arena_pa, arena_pa + arena_size, arena_size >> 20, ARENA_KMAP >> 20);
++	printf("SWEET GPU: persistent: arena 0x%llx-0x%llx (%llu MiB, kernel_map WC), cp context 39-bit\n",
++	    arena_pa, arena_pa + arena_size, arena_size >> 20);
 +	if (gpu_selftest()) {
 +		printf("SWEET GPU: self-test FAILED, GPU not offered to userland\n");
 +		return 0;		/* stay up for inspection; not ready */
@@ -386,7 +374,7 @@ index 2ef1608..0e09662 100644
  static void
  cp_stage(void)
  {
-@@ -822,6 +1173,10 @@ cp_stage(void)
+@@ -822,6 +1159,10 @@ cp_stage(void)
  				printf("SWEET GPU: %s: mem_write 0x%08x (want 0x5ee70001), cache_flush_ts 0x%08x (want 0x600d0001),"
  				    " rbbm_int_0 0x%x\n", pass ? "CP TEST PASSED, the GPU ran our commands" : "CP TEST FAILED",
  				    m, t, rd(GR(RBBM_INT_0_STATUS)));
@@ -397,7 +385,7 @@ index 2ef1608..0e09662 100644
  			}
  			uint64_t res;
  			int64_t rc = scm_pas(6, 0x1, 0, 0, &res);			/* PAS SHUTDOWN */
-@@ -863,6 +1218,9 @@ gx_up_and_back(void)
+@@ -863,6 +1204,9 @@ gx_up_and_back(void)
  		    rbbm, c1 - c0);
  		if (gpu_level >= 2) {
  			cp_stage();
@@ -407,7 +395,7 @@ index 2ef1608..0e09662 100644
  		}
  	} else {
  		printf("SWEET GPU: gx not up, core registers not read\n");
-@@ -922,11 +1280,14 @@ a630_thread(void *arg __unused, wait_result_t wr_ __unused)
+@@ -922,11 +1266,14 @@ a630_thread(void *arg __unused, wait_result_t wr_ __unused)
  				}
  			}
  		}
@@ -425,7 +413,7 @@ index 2ef1608..0e09662 100644
  out:
  	(void)thread_terminate(current_thread());
  	thread_block(THREAD_CONTINUE_NULL);
-@@ -941,6 +1302,7 @@ sweet_a630_init(void)
+@@ -941,6 +1288,7 @@ sweet_a630_init(void)
  	}
  	gpu_level = on;
  	PE_parse_boot_argn("sweetgpupool", &pool_pa, sizeof(pool_pa));
