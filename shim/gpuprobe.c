@@ -328,8 +328,9 @@ static void gmu_boot(void)
 	/*
 	 * Stage 3 only with the GMU running (the order edi194 logged working):
 	 * the SMMU's stream table sits behind its bus clock, gcc gpu_memnoc_gfx,
-	 * which stage 1 left halted. 0089-run: the first SMR write with it halted
-	 * reset the SoC. Skip instead of hanging if it is still off.
+	 * which stage 1 left halted. Stage 3's first run (SMMU before the GMU
+	 * boot) reset the SoC at the first S2CR/SMR write; a halted memnoc is the
+	 * suspected cause. Skip instead of resetting if it is still off.
 	 */
 	uint32_t memnoc = rd32(GCC + 0x7100c);
 	con_hex2(" memnoc", "cbcr=", memnoc, "snoc=", rd32(GCC + 0x71018));
