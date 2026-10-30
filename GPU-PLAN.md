@@ -113,3 +113,12 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   FW_VERSION 1.6, TEST `0x0E550E55`; GX rail on, SPTPRAC `0x28`, GX GDSC on; **RBBM_STATUS 0x1**, counter ticking;
   slumber as in the shim (SPTPRAC off, OOB not acked, CM3 fault); GMU back in reset. iOS then boots to
   SpringBoard as usual. Phase 1 next: the CP (SQE, CB1 for SID 0, zap via SCM PAS 13, first submit).
+- **Kernel patch 0096 (written 2026-10-30): the CP, `sweetgpu=2` only** (`sweetgpu=1` is unchanged). Pool grows to
+  256 KiB at 0xb0000000: CB1 tables at +0x10000, ring +0x14000 (GPU VA 0x40000000, 32 KiB), scratch +0x1c000
+  (0x40020000), SQE +0x20000 (0x40010000, read-only, first dword dropped as a6xx_ucode_load), zap metadata
+  +0x30000. CB1: CBAR/CBA2R(1), ASID 2, SMR2 = VALID|0, S2CR2 0x301. OOB GPU_SET (legacy 16/24), mainline's a630
+  hw_init subset (same list and values as edi194's 0144), RB_CNTL 0x0800020c, SQE_CNTL 1, CP_ME_INIT (8 dwords),
+  zap from `a630_zap.mbn` (metadata = first segment + hash segment, as qcom_mdt_load; PAS 13 INIT_IMAGE /
+  MEM_SETUP 0x8c415000 / AUTH_AND_RESET, SMC with the QCOM_SCM_INTERRUPTED resume), CP_SET_SECURE_MODE 0,
+  NOP + CP_MEM_WRITE 0x5ee70001 + CACHE_FLUSH_TS 0x600d0001 read back from scratch, PAS SHUTDOWN, GPU_SET clear,
+  then the existing slumber.

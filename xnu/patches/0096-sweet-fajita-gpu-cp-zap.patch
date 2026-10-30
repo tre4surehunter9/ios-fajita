@@ -1,0 +1,473 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 766cf0d..2ef1608 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -10,7 +10,11 @@
+  *      SMRs for the GMU's streams 5 and 4
+  *   5. HFI v1 queues: INIT / FW_VERSION / TEST
+  *   6. GX: boot OOB (rail on), SPTPRAC, RBBM_STATUS + always-on counter
+- *   7. slumber, GMU back in reset
++ *   7. sweetgpu=2 only: the CP - context bank 1 for stream 0, hw_init,
++ *      SQE microcode, CP_ME_INIT, the zap shader through TrustZone (PAS 13),
++ *      CP_SET_SECURE_MODE 0, then a CP_MEM_WRITE + CACHE_FLUSH_TS test whose
++ *      values are read back from memory (edi194's stage 7 on this phone)
++ *   8. slumber, GMU back in reset
+  * and logs every step ("SWEET GPU:"). Without sweetgpu nothing here runs.
+  *
+  * Every value is the one shim/gpuprobe.c (stages 1-4) proved on the phone;
+@@ -26,7 +30,8 @@
+  *  - A read of an unpowered block hangs the bus: GPU-core registers are read
+  *    only with SPTPRAC up and the GX GDSC on.
+  *
+- * The GMU's memory (page tables, HFI, debug, log) is 64 KiB of the low DDR
++ * The GPU's memory (GMU and CP page tables, HFI, ring, SQE, scratch, zap
++ * metadata) is 256 KiB of the low DDR
+  * bank at 0xb0000000 (sweetgpupool=), outside XNU's RAM (fajita runs XNU in
+  * the 0x100000000 bank; every reserved carve-out ends below 0xaf000000),
+  * mapped write-combining like the USB DMA window: no cache maintenance.
+@@ -48,8 +53,12 @@ extern bool sweet_board_is(const char *want);
+ extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
+ extern void thread_deallocate(thread_t);
+ extern kern_return_t thread_terminate(thread_t);
++extern void _disable_preemption(void);
++extern void _enable_preemption(void);
+ void sweet_a630_init(void);
+ 
++static uint32_t gpu_level;	/* sweetgpu=: 1 GMU/HFI/GX, 2 also the CP and zap */
++
+ /* ---- register windows ---- */
+ 
+ static struct {
+@@ -64,7 +73,7 @@ static const struct {
+ 	{ &w.gpucc, 0x05090000, 0x9000 },
+ 	{ &w.gmu, 0x0506a000, 0x30000 },
+ 	{ &w.smmu, 0x05040000, 0x10000 },
+-	{ &w.core, 0x05000000, 0x1000 },	/* RBBM_STATUS only */
++	{ &w.core, 0x05000000, 0x40000 },	/* GPU registers up to RBBM_SECVID 0xf810 */
+ 	{ &w.pdc, 0x0b280000, 0x10000 },	/* sdm845.dtsi "gmu_pdc" */
+ 	{ &w.pdc_seq, 0x0b480000, 0x1000 },	/* "gmu_pdc_seq" */
+ };
+@@ -163,7 +172,7 @@ branch_on(const char *name, vm_offset_t reg)
+ 
+ /* ---- GMU memory: page tables and HFI, GPU VAs as KGSL's uncached slots ---- */
+ 
+-#define POOL_SIZE	0x10000
++#define POOL_SIZE	0x40000
+ #define P_L1		0x0000
+ #define P_L2		0x1000
+ #define P_L3A		0x2000		/* 0x60000000-0x601fffff */
+@@ -172,6 +181,17 @@ branch_on(const char *name, vm_offset_t reg)
+ #define P_HFI		0x5000		/* table page + 3 queue pages */
+ #define P_DUMP		0xa000
+ #define P_LOG		0xe000
++#define P_CP_L1		0x10000		/* context bank 1 (the CP, stream 0) */
++#define P_CP_L2		0x11000
++#define P_CP_L3		0x12000		/* 0x40000000-0x401fffff */
++#define P_RING		0x14000		/* 32 KiB */
++#define P_SCRATCH	0x1c000
++#define P_SQE		0x20000		/* up to 64 KiB, mapped read-only */
++#define P_ZAP_META	0x30000		/* not mapped: TrustZone reads it by PA */
++#define VA_RING		0x40000000u
++#define VA_SQE		0x40010000u
++#define VA_SCRATCH	0x40020000u
++#define RING_DW		(0x8000 / 4)
+ #define VA_HFI		0x60100000u
+ #define VA_DUMP		0x60200000u
+ #define VA_LOG		0x60300000u
+@@ -183,13 +203,19 @@ static uint64_t pool_pa = 0xb0000000ULL;
+ #define PV(off)		(w.pool + (off))
+ 
+ static void
+-map_pages(uint32_t l3, uint32_t va, uint32_t off, unsigned pages)
++map_pages_attr(uint32_t l3, uint32_t va, uint32_t off, unsigned pages, uint64_t attr)
+ {
+ 	for (unsigned i = 0; i < pages; i++) {
+-		wr64(PV(l3) + 8 * (((va >> 12) & 0x1ff) + i), (pool_pa + off + 0x1000 * i) | PTE_PAGE);
++		wr64(PV(l3) + 8 * (((va >> 12) & 0x1ff) + i), (pool_pa + off + 0x1000 * i) | attr);
+ 	}
+ }
+ 
++static void
++map_pages(uint32_t l3, uint32_t va, uint32_t off, unsigned pages)
++{
++	map_pages_attr(l3, va, off, pages, PTE_PAGE);
++}
++
+ /* ---- steps ---- */
+ 
+ static int
+@@ -455,6 +481,356 @@ oob_boot_slumber(void)
+ 	return rc;
+ }
+ 
++/* ---- the CP (sweetgpu=2) ---- */
++
++#define GR(word)		(w.core + 4 * (word))	/* a6xx.xml offsets are in words */
++#define RBBM_STATUS		0x0210
++#define RBBM_INT_0_STATUS	0x0201
++#define CP_RB_BASE		0x0800
++#define CP_RB_CNTL		0x0802
++#define CP_RB_RPTR		0x0806
++#define CP_RB_WPTR		0x0807
++#define CP_SQE_CNTL		0x0808
++#define CP_HW_FAULT		0x0821
++#define CP_INTERRUPT_STATUS	0x0823
++#define CP_STATUS_1		0x0825
++#define CP_SQE_INSTR_BASE	0x0830
++#define CP_ME_INIT		0x48
++#define CP_SET_SECURE_MODE	0x66
++#define CP_MEM_WRITE		0x3d
++#define CP_EVENT_WRITE		0x46
++#define CP_NOP			0x10
++#define CACHE_FLUSH_TS		0x04
++#define OOB_GPU_SET		16		/* legacy bits: set 16, ack/clear 24 */
++#define OOB_GPU_ACK		24
++#define PAS_GPU			13
++#define ZAP_PA			0x8c415000ULL	/* sdm845.dtsi gpu_mem, no-map, 0x2000 */
++#define ZAP_SIZE		0x2000u
++
++static uint32_t ring_wptr;
++
++static void
++gr_wr64(uint32_t word, uint64_t v)
++{
++	wr(GR(word), (uint32_t)v);
++	wr(GR(word + 1), (uint32_t)(v >> 32));
++}
++
++static uint32_t
++pm4_parity(uint32_t v)
++{
++	return (0x9669 >> (0xf & (v ^ (v >> 4) ^ (v >> 8) ^ (v >> 12) ^ (v >> 16) ^ (v >> 20) ^
++	       (v >> 24) ^ (v >> 28)))) & 1;
++}
++
++static uint32_t
++pkt7(uint32_t op, uint32_t cnt)
++{
++	return 0x70000000 | cnt | (pm4_parity(cnt) << 15) | ((op & 0x7f) << 16) | (pm4_parity(op) << 23);
++}
++
++/* Queue dwords, move WPTR, wait until the CP has consumed them. After ios-flame's a6_ring. */
++static int
++ring_submit(const uint32_t *dw, uint32_t n, const char *what)
++{
++	for (uint32_t i = 0; i < n; i++) {
++		wr(PV(P_RING) + 4 * ((ring_wptr + i) % RING_DW), dw[i]);
++	}
++	ring_wptr = (ring_wptr + n) % RING_DW;
++	wr(GR(CP_RB_WPTR), ring_wptr);
++	int rc = -1;
++	for (unsigned i = 0; i < 1000; i++) {
++		if (rd(GR(CP_RB_RPTR)) == ring_wptr) {
++			rc = 0;
++			break;
++		}
++		delay(100);
++	}
++	printf("SWEET GPU: cp %s: %s (rptr %u wptr %u) rbbm_status 0x%x cp_status1 0x%x hw_fault 0x%x\n",
++	    what, rc ? "TIMEOUT" : "done", rd(GR(CP_RB_RPTR)), ring_wptr, rd(GR(RBBM_STATUS)),
++	    rd(GR(CP_STATUS_1)), rd(GR(CP_HW_FAULT)));
++	return rc;
++}
++
++/* Context bank 1, stream 0 (the CP), with its own tables: ring, SQE (read-only), scratch. */
++static int
++cp_smmu(const uint8_t *sqe, uint32_t sqe_len)
++{
++	wr64(PV(P_CP_L1) + 8 * 1, (pool_pa + P_CP_L2) | PTE_TABLE);	/* VA[31:30] = 1 */
++	wr64(PV(P_CP_L2) + 8 * 0, (pool_pa + P_CP_L3) | PTE_TABLE);	/* VA[29:21] = 0 */
++	map_pages(P_CP_L3, VA_RING, P_RING, 8);
++	map_pages_attr(P_CP_L3, VA_SQE, P_SQE, 16, PTE_PAGE | (1ull << 7));
++	map_pages(P_CP_L3, VA_SCRATCH, P_SCRATCH, 1);
++	/* The SQE microcode minus its first dword, as a6xx_ucode_load. */
++	for (uint32_t o = 4; o + 4 <= sqe_len; o += 4) {
++		uint32_t v;
++		memcpy(&v, sqe + o, 4);
++		wr(PV(P_SQE) + o - 4, v);
++	}
++
++	vm_offset_t gr1 = w.smmu + 0x1000, cb1 = w.smmu + 0x9000;
++	wr(gr1 + 0x4, (1u << 16) | (3u << 8) | (0xfu << 12));		/* CBAR(1) */
++	wr(gr1 + 0x804, 1);						/* CBA2R(1) */
++	wr(cb1 + 0x4, 0x70000000);
++	wr(cb1 + 0x10, 1u | (7u << 15) | (1u << 4));
++	wr64(cb1 + 0x20, (2ull << 48) | (pool_pa + P_CP_L1));		/* ASID 2 */
++	wr(cb1 + 0x30, (2u << 12) | (1u << 23) | 32u);
++	wr(cb1 + 0x38, 0x0004ff44);
++	wr(cb1 + 0x0, 0x00c01067);
++	wr(w.smmu + 0xc00 + 4 * 2, 0x301);				/* S2CR2 -> CB1 */
++	wr(w.smmu + 0x800 + 4 * 2, 1u << 31);				/* SMR2: VALID | sid 0 */
++	uint32_t smr = rd(w.smmu + 0x808), s2cr = rd(w.smmu + 0xc08);
++	wr(w.smmu + 0x68, 0);
++	wr(w.smmu + 0x70, 0);
++	int rc = wait_bits(w.smmu + 0x74, 1u, false, 10000);
++	printf("SWEET GPU: cp context: cb1 sctlr 0x%x, smr2 0x%08x s2cr2 0x%08x, sGFSR 0x%x, tlb sync %d, sqe %u bytes\n",
++	    rd(cb1), smr, s2cr, rd(w.smmu + 0x48), rc, sqe_len - 4);
++	return (smr == (1u << 31) && s2cr == 0x301) ? 0 : -1;
++}
++
++/* a6xx hw_init, the a630 subset edi194 ran on this phone (same values as mainline). */
++static void
++cp_hw_init(void)
++{
++	wr(GR(0xf803), 0);					/* RBBM_SECVID_TSB_CNTL */
++	gr_wr64(0xf800, 0);					/* SECVID_TSB_TRUSTED_BASE */
++	wr(GR(0xf802), 0);					/* SECVID_TSB_TRUSTED_SIZE */
++	static const uint32_t addr_mode[] = {			/* *_ADDR_MODE_CNTL: 64-bit */
++		0x0842, 0x0c01, 0x8601, 0x8e05, 0x9e01, 0xbe05, 0xa601, 0x9601, 0x0e00, 0xae01, 0xb601, 0xf810,
++	};
++	for (unsigned i = 0; i < sizeof(addr_mode) / sizeof(addr_mode[0]); i++) {
++		wr(GR(addr_mode[i]), 1);
++	}
++	wr(GR(0x0010), 3);					/* RBBM_VBIF_CLIENT_QOS_CNTL */
++	wr(GR(0x302a), 9);					/* VBIF_GATE_OFF_WRREQ_EN (a630) */
++	wr(GR(0x050b), 0xffffffff);				/* RBBM_PERFCTR_GPU_BUSY_MASKED */
++	gr_wr64(0x0e05, 0x1fffffffff000ull + 0xfc0);		/* UCHE_WRITE_RANGE_MAX */
++	gr_wr64(0x0e09, 0x1fffffffff000ull);			/* UCHE_TRAP_BASE */
++	gr_wr64(0x0e07, 0x1fffffffff000ull);			/* UCHE_WRITE_THRU_BASE */
++	gr_wr64(0x0e0b, 0x100000);				/* UCHE_GMEM_RANGE_MIN */
++	gr_wr64(0x0e0d, 0x100000 + 0x100000 - 1);		/* UCHE_GMEM_RANGE_MAX (1 MiB GMEM) */
++	wr(GR(0x0e18), 0x804);					/* UCHE_FILTER_CNTL */
++	wr(GR(0x0e17), 0x4);					/* UCHE_CACHE_WAYS */
++	wr(GR(0x08c2), 0x010000c0);				/* CP_ROQ_THRESHOLDS_2 */
++	wr(GR(0x08c1), 0x8040362c);				/* CP_ROQ_THRESHOLDS_1 */
++	wr(GR(0x08c3), 128);					/* CP_MEM_POOL_SIZE */
++	wr(GR(0x9e00), 0x00180000);				/* PC_DBG_ECO_CNTL: a630 prim fifo */
++	wr(GR(0x098d), 1);					/* CP_AHB_CNTL */
++	wr(GR(0x0500), 1);					/* RBBM_PERFCTR_CNTL */
++	wr(GR(0x001f), (1u << 30) | 0x1fffff);			/* RBBM_INTERFACE_HANG_INT_CNTL */
++	wr(GR(0x0e19), (1u << 7) | 1u);				/* UCHE_CLIENT_PF */
++	gr_wr64(CP_SQE_INSTR_BASE, VA_SQE);
++	gr_wr64(CP_RB_BASE, VA_RING);
++	wr(GR(CP_RB_CNTL), (1u << 27) | (2u << 8) | 12u);	/* NO_UPDATE, BLKSZ 32 B, BUFSZ 32 KiB */
++	ring_wptr = 0;
++	printf("SWEET GPU: cp configured: rb_cntl 0x%x sqe_base 0x%x rb_base 0x%x roq2 0x%x addr_mode 0x%x\n",
++	    rd(GR(CP_RB_CNTL)), rd(GR(CP_SQE_INSTR_BASE)), rd(GR(CP_RB_BASE)), rd(GR(0x08c2)), rd(GR(0x0842)));
++}
++
++/* Qualcomm SCM over SMC: x0..x7 in, x0..x3 out; resume on QCOM_SCM_INTERRUPTED (1). After ios-flame. */
++static void
++smc(uint64_t x[8])
++{
++	uint64_t in[8];
++	memcpy(in, x, sizeof(in));
++	_disable_preemption();
++	for (unsigned resumes = 0;; resumes++) {
++		register uint64_t x0 __asm__("x0") = x[0];
++		register uint64_t x1 __asm__("x1") = x[1];
++		register uint64_t x2 __asm__("x2") = x[2];
++		register uint64_t x3 __asm__("x3") = x[3];
++		register uint64_t x4 __asm__("x4") = x[4];
++		register uint64_t x5 __asm__("x5") = x[5];
++		register uint64_t x6 __asm__("x6") = x[6];
++		register uint64_t x7 __asm__("x7") = x[7];
++		__asm__ volatile ("smc #0"
++                    : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3), "+r"(x4), "+r"(x5), "+r"(x6), "+r"(x7)
++                    :
++                    : "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17", "memory");
++		x[0] = x0;
++		x[1] = x1;
++		x[2] = x2;
++		x[3] = x3;
++		if (x0 != 1 || resumes >= 100000) {
++			break;
++		}
++		memcpy(x, in, sizeof(in));
++		x[0] = 1;
++		x[6] = x6;
++	}
++	_enable_preemption();
++}
++
++static int64_t
++scm_pas(uint32_t cmd, uint64_t arginfo, uint64_t a, uint64_t b, uint64_t *result)
++{
++	uint64_t x[8] = { 0x42000000ull | (2u << 8) | cmd, arginfo, PAS_GPU, a, b, 0, 0, 0 };
++	smc(x);
++	*result = x[1];
++	return (int64_t)x[0];
++}
++
++/*
++ * a630_zap.mbn is the whole signed image (postmarketOS). As qcom_mdt_load:
++ * metadata = the first segment (ELF header + phdrs) + the hash segment, by
++ * PA to PAS_INIT_IMAGE; then MEM_SETUP on the carve-out, the loadable
++ * segments copied in at paddr - min paddr, then AUTH_AND_RESET.
++ */
++/* Copy bytes to device-mapped memory with plain word stores (zero-padded tail). */
++static void
++copy_words(vm_offset_t dst, const uint8_t *src, uint32_t len)
++{
++	for (uint32_t o = 0; o < len; o += 4) {
++		uint32_t v = 0;
++		memcpy(&v, src + o, MIN(4u, len - o));
++		wr(dst + o, v);
++	}
++}
++
++#define QCOM_MDT_TYPE(f)	(((f) >> 24) & 7)
++#define QCOM_MDT_TYPE_HASH	2
++
++static int
++zap_load(const uint8_t *mbn, uint32_t len)
++{
++	uint32_t phoff, phnum, hash = ~0u;
++	if (len < 52 || memcmp(mbn, "\177ELF", 4) || mbn[4] != 1) {
++		printf("SWEET GPU: zap: not an ELF32 image\n");
++		return -1;
++	}
++	memcpy(&phoff, mbn + 0x1c, 4);
++	phnum = mbn[0x2c] | (mbn[0x2d] << 8);
++	struct { uint32_t type, off, va, pa, filesz, memsz, flags, align; } ph[8];
++	if (phnum < 2 || phnum > 8 || phoff + phnum * sizeof(ph[0]) > len) {
++		return -1;
++	}
++	memcpy(ph, mbn + phoff, phnum * sizeof(ph[0]));
++	uint64_t lo = ~0ull, hi = 0;
++	for (uint32_t i = 0; i < phnum; i++) {
++		if (QCOM_MDT_TYPE(ph[i].flags) == QCOM_MDT_TYPE_HASH) {
++			hash = i;
++		} else if (ph[i].type == 1 && ph[i].memsz) {
++			lo = MIN(lo, ph[i].pa);
++			hi = MAX(hi, (uint64_t)ph[i].pa + ph[i].memsz);
++		}
++	}
++	uint32_t ehdr = ph[0].filesz;
++	if (hash == ~0u || ehdr > len || ph[hash].off + ph[hash].filesz > len || ehdr + ph[hash].filesz > 0x8000 ||
++	    lo == ~0ull || ((hi + 0xfff) & ~0xfffull) - lo > ZAP_SIZE) {
++		printf("SWEET GPU: zap: unexpected layout\n");
++		return -1;
++	}
++	if (ehdr & 3) {
++		return -1;
++	}
++	copy_words(PV(P_ZAP_META), mbn, ehdr);
++	copy_words(PV(P_ZAP_META) + ehdr, mbn + ph[hash].off, ph[hash].filesz);
++
++	uint64_t res;
++	int64_t rc = scm_pas(1, 0x82, pool_pa + P_ZAP_META, 0, &res);		/* INIT_IMAGE (val, rw buf) */
++	printf("SWEET GPU: zap INIT_IMAGE (meta %u bytes) -> %lld result %llu\n", ehdr + ph[hash].filesz, rc, res);
++	if (rc || res) {
++		return -1;
++	}
++	uint64_t size = ((hi + 0xfff) & ~0xfffull) - lo;
++	rc = scm_pas(2, 0x3, ZAP_PA, size, &res);					/* MEM_SETUP */
++	printf("SWEET GPU: zap MEM_SETUP 0x%llx size 0x%llx -> %lld result %llu\n", ZAP_PA, size, rc, res);
++	if (rc || res) {
++		return -1;
++	}
++	vm_offset_t region = ml_io_map_wcomb((vm_offset_t)ZAP_PA, ZAP_SIZE);
++	if (!region) {
++		return -1;
++	}
++	for (uint32_t o = 0; o < ZAP_SIZE; o += 4) {
++		wr(region + o, 0);
++	}
++	for (uint32_t i = 0; i < phnum; i++) {
++		if (i == hash || ph[i].type != 1 || !ph[i].memsz || ph[i].off + ph[i].filesz > len) {
++			continue;
++		}
++		if ((ph[i].pa - lo) & 3) {
++			return -1;
++		}
++		copy_words(region + (ph[i].pa - lo), mbn + ph[i].off, ph[i].filesz);
++		printf("SWEET GPU: zap segment %u: %u bytes -> carve-out +0x%llx\n", i, ph[i].filesz, ph[i].pa - lo);
++	}
++	rc = scm_pas(5, 0x1, 0, 0, &res);						/* AUTH_AND_RESET */
++	printf("SWEET GPU: zap AUTH_AND_RESET -> %lld result %llu%s\n", rc, res,
++	    (rc || res) ? "" : ": the zap shader runs");
++	return (rc || res) ? -1 : 0;
++}
++
++static void
++cp_stage(void)
++{
++	const uint8_t *sqe = NULL, *zap = NULL;
++	unsigned sqe_len = 0, zap_len = 0;
++	DTEntry chosen;
++	if (SecureDTLookupEntry(NULL, "/chosen", &chosen) != kSuccess ||
++	    SecureDTGetProperty(chosen, "gpufw,a630_sqe.fw", (const void **)&sqe, &sqe_len) != kSuccess ||
++	    SecureDTGetProperty(chosen, "gpufw,a630_zap.mbn", (const void **)&zap, &zap_len) != kSuccess ||
++	    sqe_len < 8 || sqe_len - 4 > 0x10000) {
++		printf("SWEET GPU: cp: needs gpufw,a630_sqe.fw and gpufw,a630_zap.mbn (sqe %u, zap %u bytes)\n",
++		    sqe_len, zap_len);
++		return;
++	}
++	if (cp_smmu(sqe, sqe_len)) {
++		return;
++	}
++
++	/* hw_init: keep the GPU on while the CPU sets it up. */
++	wr(G(GMU_H2G_SET), 1u << OOB_GPU_SET);
++	int oob = wait_bits(G(GMU_G2H_INFO), 1u << OOB_GPU_ACK, true, 10000);
++	wr(G(GMU_G2H_CLR), 1u << OOB_GPU_ACK);
++	printf("SWEET GPU: oob gpu_set %s\n", oob ? "not acked" : "acked");
++	printf("SWEET GPU: cp before: sqe_cntl 0x%x hw_fault 0x%x irq 0x%x rptr %u cp_status1 0x%x\n",
++	    rd(GR(CP_SQE_CNTL)), rd(GR(CP_HW_FAULT)), rd(GR(CP_INTERRUPT_STATUS)), rd(GR(CP_RB_RPTR)),
++	    rd(GR(CP_STATUS_1)));
++	cp_hw_init();
++	wr(GR(CP_SQE_CNTL), 1);
++	printf("SWEET GPU: cp SQE enabled, cp_status1 0x%x\n", rd(GR(CP_STATUS_1)));
++
++	static const uint32_t me_init[8] = { 0x2f, 0x3, 0x20000000, 0, 0, 0, 0, 0 };
++	uint32_t dw[16];
++	dw[0] = pkt7(CP_ME_INIT, 8);
++	memcpy(&dw[1], me_init, sizeof(me_init));
++	if (ring_submit(dw, 9, "CP_ME_INIT") == 0) {
++		bool zap_ok = zap_load(zap, zap_len) == 0;
++		if (zap_ok) {
++			dw[0] = pkt7(CP_SET_SECURE_MODE, 1);
++			dw[1] = 0;
++			if (ring_submit(dw, 2, "CP_SET_SECURE_MODE 0") == 0) {
++				for (unsigned i = 0; i < 2; i++) {
++					wr(PV(P_SCRATCH) + 4 * i, 0);
++				}
++				uint64_t va = VA_SCRATCH;
++				uint32_t n = 0;
++				dw[n++] = pkt7(CP_NOP, 0);
++				dw[n++] = pkt7(CP_MEM_WRITE, 3);
++				dw[n++] = (uint32_t)va;
++				dw[n++] = (uint32_t)(va >> 32);
++				dw[n++] = 0x5ee70001;
++				dw[n++] = pkt7(CP_EVENT_WRITE, 4);
++				dw[n++] = CACHE_FLUSH_TS;
++				dw[n++] = (uint32_t)(va + 4);
++				dw[n++] = (uint32_t)((va + 4) >> 32);
++				dw[n++] = 0x600d0001;
++				int rc = ring_submit(dw, n, "NOP + MEM_WRITE + CACHE_FLUSH_TS");
++				uint32_t m = rd(PV(P_SCRATCH)), t = rd(PV(P_SCRATCH) + 4);
++				bool pass = !rc && m == 0x5ee70001 && t == 0x600d0001;
++				printf("SWEET GPU: %s: mem_write 0x%08x (want 0x5ee70001), cache_flush_ts 0x%08x (want 0x600d0001),"
++				    " rbbm_int_0 0x%x\n", pass ? "CP TEST PASSED, the GPU ran our commands" : "CP TEST FAILED",
++				    m, t, rd(GR(RBBM_INT_0_STATUS)));
++			}
++			uint64_t res;
++			int64_t rc = scm_pas(6, 0x1, 0, 0, &res);			/* PAS SHUTDOWN */
++			printf("SWEET GPU: zap shutdown -> %lld result %llu\n", rc, res);
++		}
++	}
++	wr(G(GMU_H2G_SET), 1u << OOB_GPU_ACK);					/* clear GPU_SET */
++}
++
+ static void
+ gx_up_and_back(void)
+ {
+@@ -485,6 +861,9 @@ gx_up_and_back(void)
+ 		uint32_t c1 = rd(G(GMU_AO_COUNTER_L));
+ 		printf("SWEET GPU: GPU CORE ANSWERS: rbbm_status 0x%x, always-on counter %u ticks in 2 ms\n",
+ 		    rbbm, c1 - c0);
++		if (gpu_level >= 2) {
++			cp_stage();
++		}
+ 	} else {
+ 		printf("SWEET GPU: gx not up, core registers not read\n");
+ 	}
+@@ -560,6 +939,7 @@ sweet_a630_init(void)
+ 	if (!PE_parse_boot_argn("sweetgpu", &on, sizeof(on)) || !on || !sweet_board_is("oneplus,fajita")) {
+ 		return;
+ 	}
++	gpu_level = on;
+ 	PE_parse_boot_argn("sweetgpupool", &pool_pa, sizeof(pool_pa));
+ 	printf("SWEET GPU: Adreno 630 bring-up (sweetgpu=%u), GMU memory at 0x%llx\n", on, pool_pa);
+ 	thread_t thread;
