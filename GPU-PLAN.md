@@ -90,3 +90,9 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   **`RBBM_STATUS = 0x1`** (idle) with no bus hang. The always-on tick count and the slumber detail ran off the
   screen edge; the slumber reported incomplete. Labels shortened and the slumber split into SPTPRAC-off and
   OOB lines for the next run.
+- **Stage 4 re-run (2026-10-30):** GMU always-on counter `0x948E` = 38030 ticks in 2 ms ≈ 19.0 MHz (the 19.2 MHz
+  XO; ticking). SPTPRAC off OK (status `0xD4`, bit 2), GX GDSCR `0x00222801` (collapsed, retention bit 11 set).
+  Slumber OOB **not acknowledged**: RPMH_POWER_STATE `0xF` (slumber), GMU2HOST_INTR_INFO `0x00800000` =
+  **CM3_FAULT** (bit 23): the GMU firmware faulted on the slumber request. edi194 saw the same missing ACK on
+  this phone (state 0xF, treated as done). Suspect: the RSC wake ACK that never comes. Not blocking (the GMU
+  is reset afterwards); must be fixed before the kernel driver idles the GPU at runtime.
