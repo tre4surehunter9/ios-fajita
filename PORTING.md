@@ -283,6 +283,12 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
   v2 table + imp-res-offset 8, UTMI pipe clock, DWC3 soft reset to GUSB2PHYCFG 0x2400 / GCTL
   0x00112000. Untested. Known-good boot image kept as `shim-boot-0092a-known-good.img`.
 
+- **USB on normal boots (0093):** flashed to boot_a. iOS boots fine (user), but no USB device appears.
+  Parked by the user; the diagnostic image `shim-boot-0093c.img` (console visible) is ready for later.
+  The live console still works with `fastboot boot`.
+- **GPU work started 2026-10-29:** see [`GPU-PLAN.md`](GPU-PLAN.md). Firmware is in `research/gpu/fw/`
+  (zap from postmarketOS, by the user's choice). Builds run on GitHub Actions.
+
 ## Blocked / open
 
 - ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
