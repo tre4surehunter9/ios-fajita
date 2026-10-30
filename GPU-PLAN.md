@@ -106,3 +106,10 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
 - **CI on macos-15 (2026-10-30): success** (run 41116893474, Xcode 16 with patch 0095; 0094 included). Test
   image `shim/out-fajita/shim-boot-0095g.img`: kernel `xnu/out-0095`, ADT `fajita-0093.adt` (as on boot_a),
   `--gpufw research/gpu/fw`, the standard boot-args + `sweetgpu=1`. `fastboot boot` only, cold start first.
+- **0094 on the phone (2026-10-30, image 0095g, USB log): PASS, the whole ladder runs inside iOS in 119 ms.**
+  CX GDSC `0x00222001` → `0xF8222000`; gpu_memnoc_gfx / snoc_dvm_gfx report HALTED at that point (as in the shim,
+  harmless); gmu_clk 200 MHz; PDC `0x80000001`, RSC no ack; firmware 8192 words, 0 bad (full read-back);
+  `0xBABEFACE`; SMR0/1 `0x80000005`/`0x80000004`, S2CR `0x300`, sGFSR 0; HFI up, INIT `0x2047E` err 0,
+  FW_VERSION 1.6, TEST `0x0E550E55`; GX rail on, SPTPRAC `0x28`, GX GDSC on; **RBBM_STATUS 0x1**, counter ticking;
+  slumber as in the shim (SPTPRAC off, OOB not acked, CM3 fault); GMU back in reset. iOS then boots to
+  SpringBoard as usual. Phase 1 next: the CP (SQE, CB1 for SID 0, zap via SCM PAS 13, first submit).
