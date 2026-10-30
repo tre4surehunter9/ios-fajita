@@ -256,14 +256,146 @@ static uint32_t hfi_cmd(uint32_t id, const uint32_t *payload, uint32_t n, uint32
 	return hdr;
 }
 
-static void hfi_handshake(void)
+/* ---- stage 4: PDC/RSC microcode, GX rail, SPTPRAC, first GPU-core reads ---- */
+
+#define RSCC			(GMU + 0x23000)		/* mainline gmu->rscc; regs are word offsets */
+#define PDC			0x0b280000UL		/* sdm845.dtsi gmu "gmu_pdc" */
+#define PDC_SEQ			0x0b480000UL		/* "gmu_pdc_seq" */
+#define PDC_GFX_ARC		0x30050u		/* gfx.lvl from this phone's cmd-db (edi194;
+							   Linux hardcodes 0x30080 for a630) */
+#define GX_ARC_IDX		3u			/* 257 MHz boot level: gfx and mx ARC index 3
+							   on this phone (edi194, from cmd-db) */
+#define GMU_SPTPRAC_CTRL	0x204
+#define GMU_BOOT_SLUMBER	0x8fe0
+#define GMU_GX_VOTE		0x8fe4
+#define GMU_MX_VOTE		0x8fe8
+#define GMU_PWR_COUNTER_EN	0x14100
+#define GMU_AO_COUNTER_L	0x14220
+#define GMU_SPTPRAC_STATUS	0x14340
+#define GMU_RPMH_PSTATE		0x143b0
+#define GMU_RSCC_REQ		0x24c1c
+#define GMU_RSCC_ACK		0x24c20
+#define GMU_AO_FENCE_CTRL	0x24c40
+#define GPU_CORE		0x05000000UL
+#define GPU_RBBM_STATUS		0x840			/* a6xx.xml 0x0210 */
+#define GPUCC_GX_GDSCR		0x100c
+#define OOB_BOOT_SLUMBER_SET	22
+#define OOB_BOOT_SLUMBER_ACK	30
+
+/* a6xx_gmu_rpmh_init (a630 branch): RSC handshake + sequencer, PDC sequencer and TCS1/TCS3. */
+static void rpmh_init(void)
+{
+	wr32(RSCC + 4 * 0x004, 1u << 24);		/* RSC_STATUS0_DRV0: no SDE clock gating */
+	wr32(RSCC + 4 * 0x00b, 1);			/* PDC_SLAVE_ID_DRV0 */
+	for (unsigned i = 0; i < 3; i++) {		/* HIDDEN_TCS_CMD0 DATA/ADDR, +0/+2/+4 */
+		wr32(RSCC + 4 * (0x00e + 2 * i), i == 2 ? 0x80000000u : 0);
+		wr32(RSCC + 4 * (0x00d + 2 * i), 0);
+	}
+	wr32(RSCC + 4 * 0x100, 0);			/* OVERRIDE_START_ADDR */
+	wr32(RSCC + 4 * 0x008, 0x4520);			/* PDC_SEQ_START_ADDR */
+	wr32(RSCC + 4 * 0x009, 0x4510);			/* PDC_MATCH_VALUE_LO */
+	wr32(RSCC + 4 * 0x00a, 0x4514);			/* PDC_MATCH_VALUE_HI */
+	static const uint32_t rsc_seq[5] = { 0xa7a506a0, 0xa1e6a6e7, 0xa2e081e1, 0xe9a982e2, 0x0020e8a8 };
+	static const uint32_t pdc_seq[5] = { 0xfebea1e1, 0xa5a4a3a2, 0x8382a6e0, 0xbce3e284, 0x002081fc };
+	for (unsigned i = 0; i < 5; i++) {
+		wr32(RSCC + 4 * (0x180 + i), rsc_seq[i]);	/* SEQ_MEM_0_DRV0 */
+		wr32(PDC_SEQ + 4 * i, pdc_seq[i]);
+	}
+	/* TCS1 (sleep) and TCS3 (wake): mx, cx, gfx ARC votes. */
+	static const uint32_t tcs[2] = { 0x1572, 0x15d6 };
+	static const uint32_t addr[3] = { 0x30010, 0x30000, PDC_GFX_ARC };
+	static const uint32_t data[2][3] = { { 1, 0, 0 }, { 2, 3, 3 } };
+	for (unsigned t = 0; t < 2; t++) {
+		uintptr_t b = PDC + 4 * tcs[t];		/* CONTROL; ENABLE_BANK +1, WAIT +2, CMD0 +3 */
+		wr32(b + 4 * 1, 7);
+		wr32(b + 4 * 2, 0);
+		wr32(b, 0);
+		for (unsigned c = 0; c < 3; c++) {
+			wr32(b + 4 * (3 + 3 * c), 0x10108);		/* MSGID */
+			wr32(b + 4 * (4 + 3 * c), addr[c]);		/* ADDR */
+			wr32(b + 4 * (5 + 3 * c), data[t][c]);		/* DATA */
+		}
+	}
+	wr32(PDC + 4 * 0x1148, 0);			/* GPU_SEQ_START_ADDR */
+	wr32(PDC + 4 * 0x1140, 0x80000001);		/* GPU_ENABLE_PDC */
+	con_hex2(" pdc/rsc", "pdc en=", rd32(PDC + 4 * 0x1140), "gfx arc=", PDC_GFX_ARC);
+
+	/* a6xx_rpmh_start. edi194 never saw the ACK on this phone and carried on. */
+	wr32(GMU + GMU_RSCC_REQ, 1u << 1);
+	int ack = wait_bits(GMU + GMU_RSCC_ACK, 1u << 1, 1, 10000);
+	int idle = wait_bits(RSCC + 4 * 0x101, ~0u, 0, 10000);	/* SEQ_BUSY_DRV0 */
+	wr32(GMU + GMU_RSCC_REQ, 0);
+	con_hex2(" rsc wake", "ack=", ack ? 0 : 1, "idle=", idle ? 0 : 1);
+}
+
+/* Boot OOB (legacy bits): set, wait for the ack, clear the ack. 0 on success. */
+static int oob_boot_slumber(void)
+{
+	wr32(GMU + GMU_H2G_SET, 1u << OOB_BOOT_SLUMBER_SET);
+	int rc = wait_bits(GMU + GMU_G2H_INFO, 1u << OOB_BOOT_SLUMBER_ACK, 1, 10000);
+	uint32_t info = rd32(GMU + GMU_G2H_INFO);
+	wr32(GMU + GMU_G2H_CLR, 1u << OOB_BOOT_SLUMBER_ACK);
+	return rc ? -(int)(info | 1) : 0;
+}
+
+static void gx_stage(void)
+{
+	con_str("GPU", "stage 4: gx rail + sptprac");
+	/* a6xx_gmu_gfx_rail_on */
+	wr32(GMU + GMU_BOOT_SLUMBER, 0);
+	wr32(GMU + GMU_GX_VOTE, GX_ARC_IDX);
+	wr32(GMU + GMU_MX_VOTE, GX_ARC_IDX);
+	int rc = oob_boot_slumber();
+	con_hex2(rc ? " OOB NO ACK" : " gx rail on", "pstate=", rd32(GMU + GMU_RPMH_PSTATE),
+	    "sptp=", rd32(GMU + GMU_SPTPRAC_STATUS));
+	if (rc)
+		return;
+
+	/* a6xx_sptprac_enable */
+	wr32(GMU + GMU_SPTPRAC_CTRL, 0x778000);
+	int sp = -1;
+	for (unsigned i = 0; i < 10000 && sp; i++) {
+		if ((rd32(GMU + GMU_SPTPRAC_STATUS) & 0x38) == 0x28)
+			sp = 0;
+		else
+			delay_us(1);
+	}
+	uint32_t gdscr = rd32(GPUCC + GPUCC_GX_GDSCR);
+	con_hex2(sp ? " SPTPRAC FAIL" : " sptprac on", "status=", rd32(GMU + GMU_SPTPRAC_STATUS),
+	    "gx gdscr=", gdscr);
+
+	/* A read of a gated core hangs the bus: only with SPTPRAC up and the GX GDSC on. */
+	if (!sp && (gdscr & (1u << 31))) {
+		uint32_t rbbm = rd32(GPU_CORE + GPU_RBBM_STATUS);
+		uint32_t c0 = rd32(GMU + GMU_AO_COUNTER_L);
+		delay_us(2000);
+		uint32_t c1 = rd32(GMU + GMU_AO_COUNTER_L);
+		con_hex2("GPU CORE", "rbbm_status=", rbbm, "ao ticks/2ms=", c1 - c0);
+	} else {
+		con_str("GPU", "GX not up: core registers not read");
+	}
+
+	/* a6xx_gmu_notify_slumber (legacy): give the rail back. */
+	wr32(GMU + GMU_PWR_COUNTER_EN, 0);
+	wr32(GPUCC + GPUCC_GX_GDSCR, rd32(GPUCC + GPUCC_GX_GDSCR) | (1u << 11));	/* retention */
+	wr32(GMU + GMU_SPTPRAC_CTRL, 0x778001);
+	int off = wait_bits(GMU + GMU_SPTPRAC_STATUS, 1u << 2, 1, 10000);
+	wr32(GMU + GMU_BOOT_SLUMBER, 1);
+	rc = oob_boot_slumber();
+	wr32(GMU + GMU_H2G_SET, 1u << OOB_BOOT_SLUMBER_ACK);	/* a6xx_gmu_clear_oob */
+	wr32(GMU + GMU_AO_FENCE_CTRL, 0);
+	con_hex2(rc || off ? " slumber INCOMPLETE" : " slumber", "pstate=", rd32(GMU + GMU_RPMH_PSTATE),
+	    "sptp=", rd32(GMU + GMU_SPTPRAC_STATUS));
+}
+
+static int hfi_handshake(void)
 {
 	wr32(GMU + GMU_HFI_INIT, 1);
 	int rc = wait_bits(GMU + GMU_HFI_STATUS, 1u, 1, 100000);
 	con_hex2(rc ? "HFI NOT UP" : "HFI UP", "status=", rd32(GMU + GMU_HFI_STATUS),
 	    "ver=", rd32(GMU + GMU_HFI_VERSION));
 	if (rc)
-		return;
+		return -1;
 	uint32_t r[4];
 	const uint32_t init[4] = { 0, VA_DUMP, 0x4000, 1 };	/* seg, dbg addr/size, COLD_BOOT */
 	uint32_t h = hfi_cmd(0, init, 4, r);
@@ -273,6 +405,7 @@ static void hfi_handshake(void)
 	con_hex2(h ? " fw ver" : " fwver NO REPLY", "hdr=", h, "ver=", r[3]);
 	h = hfi_cmd(5, 0, 0, r);
 	con_hex2(h ? " test" : " test NO REPLY", "hdr=", h, "data=", r[3]);
+	return h ? 0 : -1;
 }
 
 static void gmu_boot(void)
@@ -294,6 +427,8 @@ static void gmu_boot(void)
 		con_hex2("GPU", "GMU NOT IN RESET, cold boot needed, sysrst=", sysreset, 0, 0);
 		return;
 	}
+	/* Mainline: RSC/PDC microcode at probe, RSC wake before the firmware load. */
+	rpmh_init();
 	const uint32_t *fw = (const uint32_t *)gmu_fw_start;
 	uint32_t words = (uint32_t)(gmu_fw_end - gmu_fw_start) / 4;
 	if (words == 0 || words > 0x2000) {
@@ -346,7 +481,8 @@ static void gmu_boot(void)
 		con_str("GPU", "stage 3: smmu + hfi table");
 		if (smmu_setup() == 0) {
 			hfi_table();
-			hfi_handshake();
+			if (hfi_handshake() == 0)
+				gx_stage();
 		}
 	}
 	/* Leave the GMU parked in reset (edi194: a running core cannot be reloaded). */

@@ -79,3 +79,9 @@ Each phase gets its own boot-arg gate, so a broken GPU stage never stops the CPU
   INIT ACK `0x0002047E` error 0; FW_VERSION ACK `0x0012047E`, **firmware version `0x10060000` (1.6)**; TEST ACK
   `0x0022047E` data `0x0E550E55`. GMU parked in reset after. Next: stage 4, the GX side (GMU boot OOB / GX
   rail on, SPTPRAC, then GPU core registers RBBM_STATUS / CP_ALWAYS_ON readable).
+- **Stage 4 (shim, written 2026-10-30):** PDC/RSC microcode (mainline a630 values; PDC 0xb280000, PDC seq
+  0xb480000, RSCC GMU+0x23000; gfx ARC address 0x30050 from this phone's cmd-db per edi194, not Linux's 0x30080)
+  and RSC wake before the firmware load; after HFI: boot OOB with gfx/mx ARC index 3 (257 MHz, edi194's
+  cmd-db reading), SPTPRAC on (`0x778000`, status & 0x38 == 0x28), GX GDSC check, then RBBM_STATUS and the
+  GMU always-on counter (only if SPTPRAC is up and the GX GDSC is on), then the legacy slumber. The ARC
+  index and gfx address are hardcoded from edi194's log, not read from cmd-db by us (to do in the kernel).
