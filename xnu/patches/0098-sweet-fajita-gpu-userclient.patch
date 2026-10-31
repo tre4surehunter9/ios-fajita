@@ -316,10 +316,10 @@ index 321be6e..4650aa7 100644
  		return -1;
 diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
 new file mode 100644
-index 0000000..ef0a1fd
+index 0000000..fb64c9c
 --- /dev/null
 +++ b/iokit/Kernel/arm/SweetGPU.cpp
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,580 @@
 +/*
 + * SWEET: fajita Adreno 630 for userland (GPU-PLAN.md Phase 2.2).
 + *
@@ -350,6 +350,7 @@ index 0000000..ef0a1fd
 +#include <IOKit/IOUserClient.h>
 +#include <IOKit/IOLib.h>
 +#include <IOKit/IOMemoryDescriptor.h>
++#include <IOKit/IOKitKeys.h>
 +#include <pexpert/pexpert.h>
 +#include "SweetGPUABI.h"
 +
