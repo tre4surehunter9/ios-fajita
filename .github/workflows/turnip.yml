@@ -1,0 +1,131 @@
+name: turnip
+
+# Turnip (Mesa's Vulkan driver for Adreno) for iOS 16 arm64 with UniXNU's darwin kernel backend, which
+# talks to SweetGPU (xnu 0098/0099) through phone/turnip/NativeAdrenoABI.h, plus vktest with Turnip
+# embedded (phone/turnip). Recipe as ios-flame's tools/build-turnip-ios.sh: Mesa 85fda3b3 + UniXNU's
+# patches/mesa in the order of its scripts/data/adreno-compiler-inputs.json, fetched at a pinned UniXNU
+# commit (not copied into this repo). Artifact "turnip": vktest (+ the dylib and build logs).
+on:
+  push:
+    branches: [fajita, main]
+    paths:
+      - "phone/turnip/**"
+      - ".github/workflows/turnip.yml"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: GitHub runner image
+        default: macos-15
+
+env:
+  MESA_SHA: 85fda3b36405bcaea8bffc64aa4f2651dc90770d
+  UNIXNU_SHA: 67df14de69ae6f6ffc3480b30b70ce7667a3bd32
+  UNIXNU_PATCHES: >-
+    freedreno-tools-nir ir3-darwin-build-id ir3-portable-asm-roundtrip offline-adreno-compiler-probe
+    turnip-darwin-kmd turnip-graphics-cache-feedback turnip-empty-scissor turnip-builtin-shader-pack
+    turnip-host-import-images
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          brew install ninja glslang bison flex
+          python3 -m venv venv
+          venv/bin/pip install -q meson mako pyyaml packaging
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Mesa source
+        run: |
+          set -e
+          curl -fsSL -o mesa.tar.gz "https://gitlab.freedesktop.org/mesa/mesa/-/archive/$MESA_SHA/mesa-$MESA_SHA.tar.gz"
+          tar xzf mesa.tar.gz && mv "mesa-$MESA_SHA" mesa
+          git -C mesa init -q && git -C mesa add -A && git -C mesa -c user.name=ci -c user.email=ci@local commit -qm base
+          for p in $UNIXNU_PATCHES; do
+            curl -fsSL -o "$p.patch" "https://raw.githubusercontent.com/UniXNU/UniXNU/$UNIXNU_SHA/patches/mesa/$p.patch"
+            git -C mesa apply --whitespace=nowarn "../$p.patch" && echo "applied $p"
+          done
+
+      - name: Build Turnip
+        run: |
+          set -e
+          export PATH=$PWD/venv/bin:$(brew --prefix bison)/bin:$(brew --prefix flex)/bin:$PATH
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          flags="'-target', 'arm64-apple-ios16.0', '-isysroot', '$SDK', '-fstack-protector-strong'"
+          cat > ios16.cross <<CROSS
+          [binaries]
+          c = '$(xcrun --sdk iphoneos --find clang)'
+          cpp = '$(xcrun --sdk iphoneos --find clang++)'
+          objc = '$(xcrun --sdk iphoneos --find clang)'
+          ar = '$(xcrun --sdk iphoneos --find ar)'
+          strip = '$(xcrun --sdk iphoneos --find strip)'
+          pkg-config = '/usr/bin/false'
+          [host_machine]
+          system = 'darwin'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+          [properties]
+          needs_exe_wrapper = true
+          [built-in options]
+          c_args = [$flags]
+          cpp_args = [$flags]
+          objc_args = [$flags]
+          c_link_args = [$flags]
+          cpp_link_args = [$flags]
+          objc_link_args = [$flags]
+          CROSS
+          sed -i '' 's/^          //' ios16.cross
+          unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+          export CC=$(xcrun --sdk iphoneos --find clang) CXX=$(xcrun --sdk iphoneos --find clang++)
+          meson setup build mesa --wrap-mode=nodownload --cross-file ios16.cross \
+            -Dgallium-drivers= -Dvulkan-drivers=freedreno -Dfreedreno-kmds=darwin \
+            -Dtu-darwin-abi-dir=$PWD/phone/turnip -Dplatforms=macos -Dglx=disabled -Degl=disabled -Dgbm=disabled \
+            -Dopengl=false -Dgles1=disabled -Dgles2=disabled -Dllvm=disabled -Dshared-glapi=disabled \
+            -Dxmlconfig=disabled -Dshader-cache=disabled -Dtools= -Dbuild-tests=false -Dvideo-codecs= \
+            -Dvulkan-layers= -Dlibunwind=disabled -Dlmsensors=disabled -Dvalgrind=disabled -Dexpat=disabled \
+            -Dzstd=disabled -Dbuildtype=release -Db_ndebug=true -Dtu-builtin-source-id=fajita \
+            > configure.log 2>&1 || { tail -40 configure.log; exit 1; }
+          ninja -C build src/freedreno/vulkan/libvulkan_freedreno.dylib > build.log 2>&1 ||
+            { grep -E "error:|FAILED" build.log | head -40; exit 1; }
+          lib=build/src/freedreno/vulkan/libvulkan_freedreno.dylib
+          nm -gU $lib | grep -E " T _(vk_icd|vk)GetInstanceProcAddr$"
+          echo "weak imports (resolve to NULL on iOS 16 if newer than it):"; nm -m $lib | grep "weak external" || true
+          codesign -f -s - $lib
+          ls -la $lib
+
+      - name: Build vktest
+        run: |
+          set -e
+          export PATH=$PWD/venv/bin:$PATH
+          mkdir -p out gen
+          : > gen/shaders.h
+          for s in fill.comp:fill_comp tri.vert:tri_vert tri.frag:tri_frag; do
+            glslangValidator -V --target-env vulkan1.2 --vn "${s#*:}" -o gen/"${s#*:}".h phone/turnip/shaders/"${s%%:*}" >/dev/null
+            cat gen/"${s#*:}".h >> gen/shaders.h
+          done
+          python3 phone/turnip/pack.py build/src/freedreno/vulkan/libvulkan_freedreno.dylib gen/turnip.blob
+          cp gen/turnip.blob turnip.blob      # .incbin resolves from the working directory
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK"
+          $CC -O2 -Wall -I gen -I mesa/include -o out/vktest phone/turnip/vktest.c phone/turnip/blob.S -lcompression
+          codesign -f -s - out/vktest
+          cp build/src/freedreno/vulkan/libvulkan_freedreno.dylib out/
+          file out/*
+          ls -la out
+          shasum -a 256 out/* | tee out/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: turnip
+          path: |
+            out/
+            configure.log
+            build.log

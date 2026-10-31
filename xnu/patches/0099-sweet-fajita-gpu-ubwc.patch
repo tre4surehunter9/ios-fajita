@@ -1,0 +1,48 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 4650aa7..a719a7b 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -633,6 +633,17 @@ cp_hw_init(void)
+ 	wr(GR(0x0500), 1);					/* RBBM_PERFCTR_CNTL */
+ 	wr(GR(0x001f), (1u << 30) | 0x1fffff);			/* RBBM_INTERFACE_HANG_INT_CNTL */
+ 	wr(GR(0x0e19), (1u << 7) | 1u);				/* UCHE_CLIENT_PF */
++	/*
++	 * a6xx_set_ubwc_config with SDM845's entry in qcom ubwc_config.c (UBWC 2.0,
++	 * highest bank bit 15, no flags): hbb 2 -> hbb_lo 2, hbb_hi 0; level-2
++	 * swizzling on; no AMSBC, ubwc_mode, 64-byte min access or macrotile.
++	 * SweetGPU.cpp reports the same values to Turnip.
++	 */
++	wr(GR(0x8e08), 2u << 1);				/* RB_NC_MODE_CNTL */
++	wr(GR(0xb604), 2u << 1);				/* TPL1_NC_MODE_CNTL */
++	wr(GR(0xae02), 2u << 1);				/* SP_NC_MODE_CNTL */
++	wr(GR(0x0e01), 2u << 21);				/* UCHE_MODE_CNTL */
++	wr(GR(0x0534), 0);					/* RBBM_NC_MODE_CNTL */
+ 	gr_wr64(CP_SQE_INSTR_BASE, VA_SQE);
+ 	gr_wr64(CP_RB_BASE, VA_RING);
+ 	wr(GR(CP_RB_CNTL), (1u << 27) | (2u << 8) | 12u);	/* NO_UPDATE, BLKSZ 32 B, BUFSZ 32 KiB */
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index fb64c9c..8a678ba 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -364,9 +364,9 @@ SweetGPUUserClient::method(uint32_t m, const void *in, uint32_t inSize, void *ou
+ 		/*
+ 		 * What sweet_a630.c's hw_init programs and mainline's a630 catalog
+ 		 * says: chip id 0x06030001 (adreno_is_a630), GMEM 1 MiB at UCHE
+-		 * 0x100000, trap base 0x1fffffffff000. UBWC is not configured yet
+-		 * (no a6xx_set_ubwc_config): Turnip falls back to its own a630 UBWC
+-		 * defaults until it is (version 0 = unknown).
++		 * 0x100000, trap base 0x1fffffffff000. UBWC as cp_hw_init programs it
++		 * from SDM845's qcom ubwc_config entry: UBWC 2.0, highest bank bit 15,
++		 * swizzle levels 2 and 3, no macrotile mode.
+ 		 */
+ 		rp->chip_id = 0x06030001;
+ 		rp->gmem_bytes = 0x100000;
+@@ -377,7 +377,7 @@ SweetGPUUserClient::method(uint32_t m, const void *in, uint32_t inSize, void *ou
+ 		rp->highest_bank_bit = 15;
+ 		rp->ubwc_swizzle = 0x6;
+ 		rp->macrotile_mode = 0;
+-		rp->ubwc_version = 0;
++		rp->ubwc_version = 2;
+ 		rp->flags = NativeAdrenoDeviceClientIova;
+ 		return kIOReturnSuccess;
+ 	}

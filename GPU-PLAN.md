@@ -222,3 +222,11 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   written by the GPU and read back by the CPU (EL0 dc civac works); timestamp advanced, faults 0; GPUTEST PASSED**,
   exit 0. Every ABI method used once (1, 15, 7, 2, 13, 3, 5, 6, 16, 4, 8). Note: the USB log has binary bytes,
   so search it with `grep -a`. Next: 2.3, Turnip for iOS on GitHub Actions + vktest; settle UBWC first.
+- **2.3 written (2026-10-31).** Kernel **0099**: UBWC programmed as mainline's a6xx_set_ubwc_config with SDM845's
+  qcom ubwc_config entry (UBWC 2.0, hbb 15, no flags): RB/TPL1/SP_NC_MODE_CNTL 0x4, UCHE_MODE_CNTL 0x400000,
+  RBBM_NC_MODE_CNTL 0; GetDeviceInfo ubwc_version 2, swizzle 0x6, hbb 15, macrotile 0. Workflow **turnip**:
+  Mesa 85fda3b3 + UniXNU's 9 patches/mesa (pinned UniXNU 67df14de, fetched, applied in the order of its
+  adreno-compiler-inputs.json), meson cross build for arm64-apple-ios16.0 with ios-flame's options;
+  **phone/turnip/vktest** (from ios-flame, MIT) carries Turnip raw-deflated inside the executable (blob.S),
+  unpacks it to /private/var/tmp/sweetrun and dlopens it (the payload carries one program), with
+  TU_DARWIN_SERVICE=SweetGPU (Turnip derives gpu_id 630 from chip 0x06030001). Last line "VKTEST ALL PASS".
