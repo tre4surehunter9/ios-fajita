@@ -1,0 +1,401 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 4ed5fa1..45f812e 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -938,6 +938,9 @@ int sweet_gpu_map_pages(uint64_t iova, const uint64_t *pages, uint32_t n);
+ int sweet_gpu_submit_ibs(const uint64_t *iova, const uint32_t *dwords, unsigned n, uint32_t *seq, bool *busy);
+ int sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns);
+ int sweet_gpu_wait_all_ns(uint64_t timeout_ns);
++int sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch,
++    uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh, uint64_t dst, uint32_t dst_pitch,
++    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns);
+ uint64_t sweet_gpu_timestamp(void);
+ uint64_t sweet_gpu_faults(void);
+ 
+@@ -1222,6 +1225,126 @@ fence_reached(uint32_t seq)
+ 	return (int32_t)(rd(PV(P_SCRATCH) + FENCE_OFF) - seq) >= 0;
+ }
+ 
++/*
++ * 0116: the present blit for SweetFramebuffer. One A6xx 2D-engine blit with linear filtering from a
++ * GPU-mapped BGRA8 surface (src, pitch a multiple of 64) to a scan-out buffer (dst, pitch a multiple of
++ * 64), scaling (sx,sy,sw,sh) onto (dx,dy,dw,dh). Sequence and values from Mesa
++ * gallium/drivers/freedreno/a6xx/fd6_blitter.cc (emit_setup, emit_blit_texture_setup, emit_blit_src/dst,
++ * emit_blit_setup, emit_blit_fini), offsets/fields from msm a6xx.xml / a6xx_enums.xml / adreno_common.xml:
++ * CCU flush + invalidate, RB_CCU_CNTL in sysmem (bypass) mode = 0x10000000 for a630 (color CCU at
++ * 2 x 64 KiB, freedreno_devices.py), FMT6_8_8_8_8_UNORM (0x30) with the same swap (WZYX) both sides so BGRA
++ * stays BGRA, R2D_UNORM8, RB_DBG_ECO_CNTL bit 24 around the blit (quirk QCTDD04536579; a630 base value
++ * 0x04100000), CP_BLIT(BLIT_OP_SCALE), CCU colour flush. RM6_BLIT2DSCALE is a no-op on this SQE (pm4 xml),
++ * not sent. The IB lives in one arena chunk at a fixed GPU address; callers serialize.
++ */
++#define CP_WAIT_FOR_IDLE	0x26
++#define CP_BLIT			0x2c
++#define BLIT_OP_SCALE		3
++#define PC_CCU_FLUSH_DEPTH_TS	0x1c
++#define PC_CCU_FLUSH_COLOR_TS	0x1d
++#define VA_PRESENT_IB		0x1a0000000ULL
++#define FMT6_8888_UNORM		0x30u
++#define RB_DBG_ECO_CNTL_A630	0x04100000u
++
++static uint32_t
++pkt4(uint32_t reg, uint32_t cnt)
++{
++	return 0x40000000 | cnt | (pm4_parity(cnt) << 7) | ((reg & 0x3ffff) << 8) | (pm4_parity(reg) << 27);
++}
++
++static uint64_t present_ib_pa;
++static vm_offset_t present_ib_kva;
++
++int
++sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch,
++    uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh, uint64_t dst, uint32_t dst_pitch,
++    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns)
++{
++	if (!sweet_gpu_is_ready() || (src & 15) || (dst & 63) || (src_pitch & 63) || (dst_pitch & 63) ||
++	    !sw || !sh || !dw || !dh || src_w > 16384 || src_h > 16384 || dx + dw > 16384 || dy + dh > 16384) {
++		return -1;
++	}
++	if (!present_ib_kva) {
++		if (sweet_gpu_bo_alloc(ARENA_CHUNK, ARENA_CHUNK, &present_ib_pa, &present_ib_kva) ||
++		    sweet_gpu_map(VA_PRESENT_IB, present_ib_pa, ARENA_CHUNK)) {
++			present_ib_kva = 0;
++			return -1;
++		}
++	}
++	uint32_t d[96], n = 0;
++	uint64_t ts = VA_SCRATCH + 0x200;			/* flush timestamps land here, unused */
++	static const uint32_t pre[4] = { PC_CCU_FLUSH_COLOR_TS, PC_CCU_FLUSH_DEPTH_TS, 0, 0 };
++	for (unsigned i = 0; i < 2; i++) {			/* emit_setup: CCU flush + invalidate */
++		d[n++] = pkt7(CP_EVENT_WRITE, 4);
++		d[n++] = pre[i];
++		d[n++] = (uint32_t)ts;
++		d[n++] = (uint32_t)(ts >> 32);
++		d[n++] = 0;
++	}
++	d[n++] = pkt7(CP_EVENT_WRITE, 1);
++	d[n++] = PC_CCU_INVALIDATE_COLOR;
++	d[n++] = pkt7(CP_EVENT_WRITE, 1);
++	d[n++] = PC_CCU_INVALIDATE_DEPTH;
++	d[n++] = pkt7(CP_WAIT_FOR_IDLE, 0);
++	d[n++] = pkt4(0x8e07, 1);				/* RB_CCU_CNTL: sysmem (bypass) */
++	d[n++] = 0x10000000;
++	d[n++] = pkt4(0x8401, 6);				/* GRAS_A2D_SRC_XMIN..YMAX (24.8), DEST_TL/BR */
++	d[n++] = sx << 8;
++	d[n++] = (sx + sw - 1) << 8;
++	d[n++] = sy << 8;
++	d[n++] = (sy + sh - 1) << 8;
++	d[n++] = dx | (dy << 16);
++	d[n++] = (dx + dw - 1) | ((dy + dh - 1) << 16);
++	uint32_t cntl = (0xfu << 20) | (FMT6_8888_UNORM << 8);	/* MASK, COLOR_FORMAT, IFMT R2D_UNORM8, ROTATE_0 */
++	d[n++] = pkt4(0x8c00, 2);				/* RB_A2D_BLT_CNTL, RB_A2D_PIXEL_CNTL */
++	d[n++] = cntl;
++	d[n++] = 0;
++	d[n++] = pkt4(0x8400, 1);				/* GRAS_A2D_BLT_CNTL */
++	d[n++] = cntl;
++	d[n++] = pkt4(0xacc0, 1);				/* SP_A2D_OUTPUT_INFO: float, 8888, mask */
++	d[n++] = (FMT6_8888_UNORM << 3) | (0xfu << 12);
++	d[n++] = pkt4(0xb4c0, 5);				/* TPL1_A2D_SRC_TEXTURE_INFO/SIZE/BASE/PITCH */
++	d[n++] = FMT6_8888_UNORM | (1u << 16) | (1u << 20) | (1u << 22);	/* linear, WZYX, filter, unk20/22 */
++	d[n++] = src_w | (src_h << 15);
++	d[n++] = (uint32_t)src;
++	d[n++] = (uint32_t)(src >> 32);
++	d[n++] = (src_pitch >> 6) << 9;
++	d[n++] = pkt4(0x8c17, 4);				/* RB_A2D_DEST_BUFFER_INFO/BASE/PITCH */
++	d[n++] = FMT6_8888_UNORM;				/* linear, WZYX */
++	d[n++] = (uint32_t)dst;
++	d[n++] = (uint32_t)(dst >> 32);
++	d[n++] = dst_pitch >> 6;
++	d[n++] = pkt7(CP_WAIT_FOR_IDLE, 0);			/* emit_blit_fini */
++	d[n++] = pkt4(0x8e04, 1);				/* RB_DBG_ECO_CNTL b24 for 2D blits */
++	d[n++] = RB_DBG_ECO_CNTL_A630 | (1u << 24);
++	d[n++] = pkt7(CP_BLIT, 1);
++	d[n++] = BLIT_OP_SCALE;
++	d[n++] = pkt7(CP_WAIT_FOR_IDLE, 0);
++	d[n++] = pkt4(0x8e04, 1);
++	d[n++] = RB_DBG_ECO_CNTL_A630;
++	d[n++] = pkt7(CP_EVENT_WRITE, 4);			/* the blit writes through CCU colour */
++	d[n++] = PC_CCU_FLUSH_COLOR_TS;
++	d[n++] = (uint32_t)ts;
++	d[n++] = (uint32_t)(ts >> 32);
++	d[n++] = 1;
++	d[n++] = pkt7(CP_WAIT_FOR_IDLE, 0);
++	for (uint32_t i = 0; i < n; i++) {
++		wr(present_ib_kva + 4 * i, d[i]);
++	}
++	__asm__ volatile ("dsb sy" ::: "memory");
++	uint64_t t0 = mach_absolute_time(), ns;
++	uint32_t seq;
++	if (sweet_gpu_submit(VA_PRESENT_IB, n, &seq)) {
++		return -1;
++	}
++	int rc = sweet_gpu_wait_ns(seq, 100000000ULL);
++	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++	if (gpu_ns) {
++		*gpu_ns = ns;
++	}
++	return rc;
++}
++
+ /* Wait for everything submitted so far (SweetFramebuffer before it copies a GPU-rendered frame). */
+ int
+ sweet_gpu_wait_all_ns(uint64_t timeout_ns)
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 526273a..fc5a2a5 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -57,6 +57,12 @@ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern "C" bool sweet_board_is(const char *want);
+ extern "C" void sweet_smmu_report_display(void);
+ extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
++extern "C" int sweet_gpu_map(uint64_t iova, uint64_t pa, uint64_t size);
++extern "C" int sweet_gpu_map_pages(uint64_t iova, const uint64_t *pages, uint32_t n);
++extern "C" int sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch,
++    uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh, uint64_t dst, uint32_t dst_pitch,
++    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns);
++extern "C" { int sweet_fb_scaled; }     /* read by SweetHID.cpp's touch mapping */
+ 
+ /*
+  * 0112, read-only: which MDP pipe ABL left scanning the splash buffer, with
+@@ -163,6 +169,78 @@ sweet_flip_init(uint64_t splash, uint32_t height)
+ 	printf("SWEET FLIP: on, buffers 0x%llx 0x%llx, stride %u\n", sweet_flip_pa[0], sweet_flip_pa[1], FLIP_STRIDE);
+ }
+ 
++/*
++ * 0116 GPU present blit (sweetfb_gpublit=1, needs sweetfb_flip=1): the frame goes into the back buffer by
++ * the A6xx 2D engine (sweet_gpu_present_blit in bsd/dev/sweet_a630.c), scaled from the presented
++ * 1125x2436 display onto the whole 1080x2340 panel instead of the CPU copy's centred crop; touch follows
++ * (sweet_fb_scaled). GPU addresses (below the 8 GiB client windows, apart from the kernel's own): both
++ * scan-out buffers at 0x180000000 (one map of the 24 MiB after the splash buffer), source surfaces in 4
++ * cached 16 MiB slots from 0x190000000, keyed by surface id and memory. Any failure turns the path off for
++ * the boot (CPU copy and centred touch again).
++ */
++#define PRESENT_DST_IOVA	0x180000000ULL
++#define PRESENT_SRC_IOVA	0x190000000ULL
++#define PRESENT_SLOT		0x1000000ULL
++#define PRESENT_SLOTS		4
++
++static bool sweet_gpublit_on, sweet_present_dst_mapped;
++static unsigned sweet_gpublit_logged;
++static struct { uint32_t id; const void *mem; } sweet_present_slot[PRESENT_SLOTS];
++static unsigned sweet_present_slot_next;
++static uint64_t sweet_present_pages[PRESENT_SLOT / 4096];
++
++static void
++sweet_gpublit_init(void)
++{
++	uint32_t on = 0;
++	if (sweet_flip_on && PE_parse_boot_argn("sweetfb_gpublit", &on, sizeof(on)) && on) {
++		sweet_gpublit_on = true;
++		sweet_fb_scaled = 1;
++		printf("SWEET FLIP: GPU present blit on (scaled to the panel)\n");
++	}
++}
++
++static void
++sweet_gpublit_off(const char *why)
++{
++	sweet_gpublit_on = false;
++	sweet_fb_scaled = 0;
++	printf("SWEET FLIP: GPU present blit off (%s); CPU copy from now on\n", why);
++}
++
++/* The source surface's GPU address (mapped into a slot on first use), 0 if it cannot be mapped. */
++static uint64_t
++sweet_present_src(SweetSurface *s)
++{
++	for (unsigned i = 0; i < PRESENT_SLOTS; i++) {
++		if (sweet_present_slot[i].id == s->id && sweet_present_slot[i].mem == s->memory) {
++			return PRESENT_SRC_IOVA + PRESENT_SLOT * i;
++		}
++	}
++	uint64_t len = round_page((uint64_t)s->offset + (uint64_t)s->bytesPerRow * s->height);
++	if (len > PRESENT_SLOT || len > s->memory->getLength()) {
++		return 0;
++	}
++	uint32_t n = (uint32_t)(len / 4096);
++	for (uint32_t i = 0; i < n; i++) {
++		IOByteCount seg = 0;
++		addr64_t pa = s->memory->getPhysicalSegment((IOByteCount)i * 4096, &seg, kIOMemoryMapperNone);
++		if (pa == 0 || (pa & 0xfff)) {
++			return 0;
++		}
++		sweet_present_pages[i] = pa;
++	}
++	unsigned slot = sweet_present_slot_next++ % PRESENT_SLOTS;
++	sweet_present_slot[slot].id = 0;
++	uint64_t iova = PRESENT_SRC_IOVA + PRESENT_SLOT * slot;
++	if (sweet_gpu_map_pages(iova, sweet_present_pages, n)) {
++		return 0;
++	}
++	sweet_present_slot[slot].id = s->id;
++	sweet_present_slot[slot].mem = s->memory;
++	return iova;
++}
++
+ /* VIG0 to (pa, stride); 0 latched on the flush, 1 latched after CTL_START, -1 not latched. */
+ static int
+ sweet_flip_to(uint64_t pa, uint32_t stride, uint32_t *waited_ms)
+@@ -285,6 +363,7 @@ public:
+ 	void removeClient(IOMobileFramebufferUserClient *client);
+ 	void swap(const uint8_t *rec);
+ 	void present(const uint8_t *rec);
++	bool gpuPresent(const uint8_t *rec, unsigned buffer);
+ };
+ 
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+@@ -369,6 +448,7 @@ AppleCLCD::start(IOService *provider)
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	sweet_flip_init(fPhys, fHeight);
++	sweet_gpublit_init();
+ 	return true;
+ }
+ 
+@@ -499,14 +579,16 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	IOLockUnlock(fLock);
+ 	if (sweet_fb_sync()) {
+ 		lck_mtx_lock(&sweet_fb_present_mtx);
+-		sweet_gpu_wait_all_ns(100000000ULL);
+ 		if (sweet_flip_on) {
+ 			unsigned b = sweet_flip_next;
+-			fDst = sweet_flip_va[b];
+-			fDstRowBytes = FLIP_STRIDE;
+-			present(rec);
+-			fDst = fPixels;
+-			fDstRowBytes = fRowBytes;
++			if (!sweet_gpublit_on || !gpuPresent(rec, b)) {
++				sweet_gpu_wait_all_ns(100000000ULL);
++				fDst = sweet_flip_va[b];
++				fDstRowBytes = FLIP_STRIDE;
++				present(rec);
++				fDst = fPixels;
++				fDstRowBytes = fRowBytes;
++			}
+ 			uint32_t ms = 0;
+ 			int r = sweet_flip_to(sweet_flip_pa[b], FLIP_STRIDE, &ms);
+ 			if (sweet_flip_logged < 6 || r < 0) {
+@@ -523,6 +605,7 @@ AppleCLCD::swap(const uint8_t *rec)
+ 				sweet_flip_next = b ^ 1u;
+ 			}
+ 		} else {
++			sweet_gpu_wait_all_ns(100000000ULL);
+ 			present(rec);
+ 		}
+ 		lck_mtx_unlock(&sweet_fb_present_mtx);
+@@ -633,6 +716,82 @@ AppleCLCD::present(const uint8_t *rec)
+ 	}
+ }
+ 
++/* One full-screen layer through the GPU present blit into flip buffer `buffer`; false: do the CPU copy. */
++bool
++AppleCLCD::gpuPresent(const uint8_t *rec, unsigned buffer)
++{
++	uint32_t mask = get32(rec, 0x104), layer = SWEET_FB_LAYERS;
++	for (uint32_t l = 0; l < SWEET_FB_LAYERS; l++) {
++		if ((mask & (1u << l)) && get32(rec, 0x54 + 4 * l) != 0) {
++			if (layer != SWEET_FB_LAYERS) {
++				return false;			/* more than one layer: CPU path */
++			}
++			layer = l;
++		}
++	}
++	if (layer == SWEET_FB_LAYERS) {
++		return false;
++	}
++	if (!sweet_present_dst_mapped) {
++		if (sweet_gpu_map(PRESENT_DST_IOVA, sweet_flip_pa[0], 2 * FLIP_OFFSET)) {
++			sweet_gpublit_off("scan-out buffers not mappable");
++			return false;
++		}
++		sweet_present_dst_mapped = true;
++	}
++	SweetSurface *s = sweet_surface_copy(get32(rec, 0x54 + 4 * layer));
++	if (s == NULL || s == fSurface || s->memory == NULL || (s->bytesPerElement && s->bytesPerElement != 4) ||
++	    s->elementWidth != 1 || s->elementHeight != 1 || (s->bytesPerRow & 63) || (s->offset & 15)) {
++		OSSafeReleaseNULL(s);
++		return false;
++	}
++	const uint8_t *a = rec + 0x64 + 16 * layer, *b = rec + 0xc4 + 16 * layer;
++	int32_t sx = (int32_t)get32(a, 0), sy = (int32_t)get32(a, 4), sw = (int32_t)get32(a, 8), sh = (int32_t)get32(a, 12);
++	int32_t dx = (int32_t)get32(b, 0), dy = (int32_t)get32(b, 4), dw = (int32_t)get32(b, 8), dh = (int32_t)get32(b, 12);
++	if (sx < 0 || sy < 0) {
++		sx = sy = 0;
++	}
++	if (sw <= 0 || sh <= 0 || sx + sw > (int32_t)s->width || sy + sh > (int32_t)s->height) {
++		sw = (int32_t)s->width - sx;
++		sh = (int32_t)s->height - sy;
++	}
++	if (dx < 0 || dy < 0) {
++		dx = dy = 0;
++	}
++	if (dw <= 0 || dh <= 0) {
++		dw = (int32_t)fLogicalW;
++		dh = (int32_t)fLogicalH;
++	}
++	/* Presented (logical) display -> panel, scaled. */
++	uint32_t px = (uint32_t)((int64_t)dx * fWidth / fLogicalW), py = (uint32_t)((int64_t)dy * fHeight / fLogicalH);
++	uint32_t pw = (uint32_t)((int64_t)dw * fWidth / fLogicalW), ph = (uint32_t)((int64_t)dh * fHeight / fLogicalH);
++	if (px + pw > fWidth) {
++		pw = fWidth - px;
++	}
++	if (py + ph > fHeight) {
++		ph = fHeight - py;
++	}
++	uint64_t src = sweet_present_src(s);
++	uint64_t ns = 0;
++	int rc = (src == 0 || sw <= 0 || sh <= 0 || pw == 0 || ph == 0) ? -2 :
++	    sweet_gpu_present_blit(src + s->offset, s->width, s->height, s->bytesPerRow, (uint32_t)sx, (uint32_t)sy,
++	    (uint32_t)sw, (uint32_t)sh, PRESENT_DST_IOVA + FLIP_OFFSET * buffer, FLIP_STRIDE, px, py, pw, ph, &ns);
++	if (sweet_gpublit_logged < 6 || rc) {
++		sweet_gpublit_logged++;
++		printf("SWEET FLIP: GPU blit surface %u %dx%d+%d+%d -> panel %ux%u+%u+%u into buffer %u: %s, %llu us\n",
++		    s->id, sw, sh, sx, sy, pw, ph, px, py, buffer, rc == 0 ? "done" : rc == -2 ? "NOT MAPPABLE" : "FAILED",
++		    ns / 1000);
++	}
++	s->release();
++	if (rc) {
++		sweet_gpublit_off(rc == -2 ? "source not mappable" : "blit failed or timed out");
++		return false;
++	}
++	sweet_fb_copy_ns += ns;
++	sweet_fb_presents++;
++	return true;
++}
++
+ bool
+ IOMobileFramebufferUserClient::initWithTask(task_t owningTask, void *securityID, UInt32 type)
+ {
+diff --git a/iokit/Kernel/arm/hid/SweetHID.cpp b/iokit/Kernel/arm/hid/SweetHID.cpp
+index d8b0a55..6860f1e 100644
+--- a/iokit/Kernel/arm/hid/SweetHID.cpp
++++ b/iokit/Kernel/arm/hid/SweetHID.cpp
+@@ -30,6 +30,7 @@
+ #include "IOHIDUsageTables.h"
+ 
+ extern "C" uint64_t mach_absolute_time(void);
++extern "C" int sweet_fb_scaled;         /* SweetFramebuffer.cpp: the GPU present blit scales to the panel */
+ 
+ /* One open client: the user client and its event callback. */
+ class IOHIDEventServiceClient : public OSObject {
+@@ -469,9 +470,18 @@ SweetHIDTouch::touch(int finger, bool down, int x, int y)
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+-	/* Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp). */
+-	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
+-	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	/*
++	 * Panel pixels -> the presented 1125x2436 display (SweetFramebuffer.cpp): centred (cropped) when the
++	 * CPU copies frames, scaled to the whole panel when the GPU present blit is on (0116).
++	 */
++	IOFixed nx, ny;
++	if (sweet_fb_scaled) {
++		nx = (IOFixed)(((int64_t)x << 16) / fPanelW);
++		ny = (IOFixed)(((int64_t)y << 16) / fPanelH);
++	} else {
++		nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
++		ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	}
+ 	bool moved = down && (nx != fX[finger] || ny != fY[finger]);
+ 	if (was == down && !moved) {
+ 		IOLockUnlock(fLock);

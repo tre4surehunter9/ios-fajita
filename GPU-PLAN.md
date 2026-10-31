@@ -490,3 +490,14 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   CB0, CBAR 0x10003, **SCTLR 0xe0 (M = 0: no translation)**, so the MDP scans physical addresses. Flips to
   0x9e000000 / 0x9ec00000 (stride 4352) **latched on the CTL0 flush in 1-13 ms**; screen normal (user); 15
   presents/s at 709 MHz. Next: 0116, the A6xx 2D blit (scaled) into the back buffer instead of the CPU copy.
+- **Kernel patch 0116 (written 2026-10-31): the GPU present blit (opt-in `sweetfb_gpublit=1`, needs
+  `sweetfb_flip=1`).** `sweet_gpu_present_blit()` (sweet_a630.c): one IB in an arena chunk at GPU VA 0x1a0000000
+  - CCU colour/depth flush-TS + invalidate, WFI, RB_CCU_CNTL 0x10000000 (a630 sysmem), GRAS_A2D_SRC_* (24.8)
+  + DEST_TL/BR, RB/GRAS_A2D_BLT_CNTL (MASK 0xf, FMT6_8_8_8_8_UNORM 0x30, R2D_UNORM8), RB_A2D_PIXEL_CNTL 0,
+  SP_A2D_OUTPUT_INFO, TPL1_A2D_SRC_TEXTURE_INFO (linear, WZYX, FILTER, unk20/22)/SIZE/BASE/PITCH,
+  RB_A2D_DEST_BUFFER_INFO/BASE/PITCH, WFI + RB_DBG_ECO_CNTL 0x05100000, CP_BLIT(SCALE), WFI + 0x04100000, CCU
+  colour flush-TS, WFI; submitted + fenced (100 ms). SweetFramebuffer: scan-out buffers mapped once at GPU VA
+  0x180000000 (24 MiB), source IOSurfaces in 4 cached 16 MiB slots from 0x190000000 (page list via
+  getPhysicalSegment), single full-screen layer only; 1125x2436 scaled onto 1080x2340 (Phase 5 fit). Touch
+  follows (`sweet_fb_scaled`: x/1080, y/2340 instead of the centred crop). Any failure: path off for the boot
+  (CPU copy, centred touch). The stats' "copy N us" becomes the blit's submit-to-fence time.
