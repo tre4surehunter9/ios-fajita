@@ -375,3 +375,13 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **Kernel patch 0105 (written 2026-10-31): diagnostics** on each 5-second line: real GPU clock (CP perf
   counter 0 = PERF_CP_ALWAYS_COUNT vs the GMU AO counter), RBBM_INT_0 bits latched since the last line
   (then cleared), CP_HW_FAULT, CB1 FSR/FAR/FSYNR0 (then cleared).
+- **0105 on the phone (2026-10-31, image 0105s): the GPU core runs at ~9.6 MHz.** `gpu 9 MHz` in every window
+  (CP perf counter 0 / GMU AO counter, whatever the load), no RBBM_INT_0 bits, CP_HW_FAULT 0, CB1 FSR 0x400 with
+  FAR 0: a healthy GPU ~74x below 710 MHz. gpucc 0x101c/0x1020 (downstream's gfx3d RCG) stays 0x2/0x0 = XO. The
+  GMU acks the DCVS vote but never moves the clock. Suspect: the GMU cannot do RPMh (RSC wake never acked, as
+  edi194; mainline fails hard on that; RPMH_POWER_STATE reads 0xf "slumber"); also our PDC GFX address is
+  0x30050 (cmd-db) where mainline hardcodes 0x30080 for a630.
+- **Kernel patch 0106 (written 2026-10-31): RSC/PDC diagnostics, read-only:** the cmd-db ARC list, RSCC
+  0x4..0x12/0x100..0x101/0x180..0x184 and PDC enable/TCS1/TCS3/seq read back before the wake, RSCC_CONTROL req/ack
+  and RSC status after it; before/after DCVS: RPMH_POWER_STATE, RPMH_CTRL, G2H info, DCVS registers, gpucc PLL0
+  (0x0) / PLL1 (0x100) / GX GDSC + gfx3d registers, the first 128 bytes of the GMU log.

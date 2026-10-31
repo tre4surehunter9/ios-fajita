@@ -1,0 +1,128 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index dd4ead8..b9cf4fb 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -267,6 +267,20 @@ cx_power_on(void)
+ 	return rc;
+ }
+ 
++void sweet_rpmh_dump_slave(unsigned want);
++
++/* 0106 diagnostics: n registers from base (word stride), one line. */
++static void
++dump_regs(const char *what, vm_offset_t base, uint32_t first_word, unsigned n)
++{
++	char line[200];
++	int len = snprintf(line, sizeof(line), "SWEET GPU: %s @%#x:", what, first_word);
++	for (unsigned i = 0; i < n && len < (int)sizeof(line) - 10; i++) {
++		len += snprintf(line + len, sizeof(line) - (size_t)len, " %08x", rd(base + 4 * (first_word + i)));
++	}
++	printf("%s\n", line);
++}
++
+ /* a6xx_gmu_rpmh_init (a630) + a6xx_rpmh_start. */
+ static void
+ rpmh_init(void)
+@@ -304,8 +318,21 @@ rpmh_init(void)
+ 	wr(w.pdc + 4 * 0x1148, 0);
+ 	wr(w.pdc + 4 * 0x1140, 0x80000001);
+ 
++	/* 0106: what the RSC and PDC hold before the wake request, and the cmd-db rail list. */
++	sweet_rpmh_dump_slave(3);
++	dump_regs("rscc status/handshake", RSCC(0), 0x004, 15);	/* 0x4..0x12 */
++	dump_regs("rscc override/busy", RSCC(0), 0x100, 2);
++	dump_regs("rscc seq", RSCC(0), 0x180, 5);
++	dump_regs("pdc enable/seq-start", w.pdc, 0x1140, 9);
++	dump_regs("pdc tcs1", w.pdc, 0x1572, 12);
++	dump_regs("pdc tcs3", w.pdc, 0x15d6, 12);
++	dump_regs("pdc seq mem", w.pdc_seq, 0, 5);
++	printf("SWEET GPU: gmu rscc req 0x%x ack 0x%x before the wake\n", rd(G(GMU_RSCC_REQ)), rd(G(GMU_RSCC_ACK)));
+ 	wr(G(GMU_RSCC_REQ), 1u << 1);
+ 	int ack = wait_bits(G(GMU_RSCC_ACK), 1u << 1, true, 10000);
++	printf("SWEET GPU: gmu rscc req 0x%x ack 0x%x after the wake request\n", rd(G(GMU_RSCC_REQ)), rd(G(GMU_RSCC_ACK)));
++	dump_regs("rscc status after wake", RSCC(0), 0x004, 1);
++	dump_regs("rscc busy after wake", RSCC(0), 0x101, 1);
+ 	int busy = wait_bits(RSCC(0x101), ~0u, false, 10000);
+ 	wr(G(GMU_RSCC_REQ), 0);
+ 	printf("SWEET GPU: pdc 0x%08x, rsc wake ack %d idle %d (no ack is normal on this phone)\n",
+@@ -1616,6 +1643,14 @@ gpu_set_freq(void)
+ {
+ 	uint32_t idx = gpu_freq_index < NGPU_LEVELS ? gpu_freq_index : NGPU_LEVELS - 1;
+ 	uint32_t rcg0 = rd(w.gpucc + 0x101c), cfg0 = rd(w.gpucc + 0x1020);
++	/* 0106: the GMU's power/RPMh view and the gpucc PLLs (downstream: pll0 at 0x0, pll1 at 0x100) before DCVS. */
++	printf("SWEET GPU: before DCVS: rpmh state 0x%x, rpmh ctrl 0x%x, g2h info 0x%x, dcvs perf 0x%x bw 0x%x ret 0x%x\n",
++	    rd(G(GMU_RPMH_PSTATE)), rd(G(GMU_RPMH_CTRL)), rd(G(GMU_G2H_INFO)), rd(G(GMU_DCVS_PERF_SETTING)),
++	    rd(G(GMU_DCVS_BW_SETTING)), rd(G(GMU_DCVS_RETURN)));
++	dump_regs("gpucc pll0", w.gpucc, 0x0, 8);
++	dump_regs("gpucc pll1", w.gpucc, 0x40, 8);
++	dump_regs("gpucc gx gdsc/gfx3d", w.gpucc, 0x1003, 12);	/* 0x100c .. 0x1038 */
++	dump_regs("gpucc gfx3d cbcr", w.gpucc, 0x1015, 1);		/* 0x1054 */
+ 	wr(G(GMU_DCVS_ACK_OPTION), 0);
+ 	wr(G(GMU_DCVS_PERF_SETTING), (3u << 28) | idx);
+ 	wr(G(GMU_DCVS_BW_SETTING), 0xff);
+@@ -1626,6 +1661,11 @@ gpu_set_freq(void)
+ 	printf("SWEET GPU: DCVS %u MHz (index %u): oob %s, return %d, gfx3d rcg 0x%x/0x%x -> 0x%x/0x%x\n",
+ 	    gpu_khz[idx] / 1000, idx, rc ? "NOT ACKED" : "acked", (int)rd(G(GMU_DCVS_RETURN)), rcg0, cfg0,
+ 	    rd(w.gpucc + 0x101c), rd(w.gpucc + 0x1020));
++	delay(50000);
++	printf("SWEET GPU: after DCVS: rpmh state 0x%x, g2h info 0x%x\n", rd(G(GMU_RPMH_PSTATE)), rd(G(GMU_G2H_INFO)));
++	dump_regs("gpucc pll0 after", w.gpucc, 0x0, 8);
++	dump_regs("gmu log", PV(P_LOG), 0, 16);
++	dump_regs("gmu log+64", PV(P_LOG), 16, 16);
+ }
+ 
+ static void
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index d4d0055..dd24528 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -18,6 +18,7 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ int sweet_rpmh_bcm_vote_top(const char *res);
+ int sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max);
++void sweet_rpmh_dump_slave(unsigned want);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+ #define RH_RSC_PA_SM7150   0x18220000u
+@@ -467,4 +468,41 @@ sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max)
+ 	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
+ 	return (int)n;
+ }
++/* Diagnostics (0106): every cmd-db entry of one slave type (3 = ARC) with its address. */
++void
++sweet_rpmh_dump_slave(unsigned want)
++{
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return;
++	}
++	if (!rh_map()) {
++		for (unsigned i = 0; i < 8; ++i) {
++			uint32_t h = 8u + 16u * i;
++			unsigned slave = rh_db16(h);
++			if (!slave) {
++				break;
++			}
++			if (slave != want) {
++				continue;
++			}
++			uint32_t entries = RH_DB_HEADER + rh_db16(h + 2);
++			unsigned count = rh_db16(h + 6);
++			if (!rh_range(entries, count * RH_DB_ENTRY)) {
++				break;
++			}
++			for (unsigned j = 0; j < count; ++j) {
++				uint32_t e = entries + RH_DB_ENTRY * j;
++				uint32_t k0 = rh_read(rh_db, e), k1 = rh_read(rh_db, e + 4);
++				char name[9];
++				for (unsigned c = 0; c < 8; c++) {
++					uint8_t ch = (uint8_t)((c < 4 ? k0 : k1) >> (8 * (c % 4)));
++					name[c] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : (ch ? '?' : 0);
++				}
++				name[8] = 0;
++				printf("SWEET RPMH: cmd-db slave %u: %-8s addr %#x\n", slave, name, rh_read(rh_db, e + 16));
++			}
++		}
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
