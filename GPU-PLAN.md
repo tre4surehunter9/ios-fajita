@@ -86,6 +86,41 @@ Then Phase 3 (metal2vulkan + SweetMetal2.bundle on CI) and Phase 4 (`sweetmtl=2`
 **metal2vulkan (Phase 3) is the user's priority** (clarified 2026-10-30: "vulkan2metal" meant metal2vulkan,
 Metal implemented on Vulkan, the stack ios-flame runs).
 
+## Phase 3 plan: Metal on the GPU through metal2vulkan (written 2026-10-31)
+
+Goal: backboardd composites the home screen through Metal on the A630, then SpringBoard and the rest.
+Stack (ios-flame's, which renders SpringBoard and apps this way on the A640): Metal.framework finds an
+**IOAcceleratorES** service whose `MetalPluginName` names a bundle in /System/Library/Extensions, loads it and
+asks its `MetalPluginClassName` for a device. **SweetMetal2.bundle** = UniXNU's Metal frontend
+(NativeBridgeMetalFrontend.mm, MIT, patched for iOS 16 by ios-flame) + the **metal2vulkan bridge** (Rust static
+library: steelbrain/metal2vulkan 720ef1ce, GPL-2.0+/LGPL-3.0+, + UniXNU's and ios-flame's patches; AIR -> SPIR-V
+on the phone, the Metal API on Vulkan) + **Turnip** (Phase 2) inside the bundle. CoreAnimation's ~270 pipelines
+are translated and compiled on the phone (3-30 ms each), cached per process.
+
+Steps, each its own build and phone test:
+
+- **3.1 The bridge on CI + m2vtest.** A workflow job with Rust 1.98 (`aarch64-apple-ios`, deployment 16.0) and
+  llvm-as (bridge fixtures) builds `libnative_metal_bridge.a` from metal2vulkan 720ef1ce + the patches in
+  phone/metal2/bridge/patches. `m2vtest` (the bridge's self-test: translate a Metal shader and run it on
+  Turnip) rides in a boot image like vktest, Turnip embedded. Proves the translator and runtime on our GPU
+  before Metal.framework is involved.
+- **3.2 Kernel 0101.** `sweetmtl=2` (on top of `sweetgpu=3`) publishes the GPU service as an `IOAcceleratorES`
+  with `MetalPluginName` SweetMetal2 / `MetalPluginClassName` SweetMTL2Device (ios-flame 0116); without it Metal
+  finds no device and CoreAnimation keeps its CPU renderer, as now. **Surface coherence:** our IOSurfaces are
+  cacheable kernel memory (SweetSurface, IOBufferMemoryDescriptor) and SweetFramebuffer copies them to the panel
+  with the CPU; once the GPU writes them (BoImport), the copy must invalidate the surface range first.
+- **3.3 SweetMetal2.bundle on CI + installing it without a root rebuild.** The bundle builds from the bridge,
+  the frontend and Turnip. A small installer program rides in a boot image (sweetrun runs it as root, the root
+  is writable): it unpacks the bundle into /System/Library/Extensions, writes /var/local/mtl2-clients
+  (backboardd first) and restarts backboardd so it picks up the device. The bundle then stays on the root.
+- **3.4 Milestone: the home screen composited by the GPU.** backboardd through Metal (MTL2 log lines,
+  pipelines compiled on the phone, a photo), then SpringBoard (the unlock swipe needs it), then every process.
+- **Afterwards (Phase 4):** frame rate and presentation (the GPU blit to the panel instead of the CPU copy,
+  ios-flame 0095/0119), memory per process, apps.
+
+Licences: our code and ios-flame's/UniXNU's MIT files keep MIT with attribution; the metal2vulkan patches
+fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-2.0+ or LGPL-3.0+ terms).
+
 ## Log
 
 - **Stage 1 (shim, 2026-10-29):** `GPUPROBE=1 BOARD=fajita shim/build.sh` builds a no-payload shim that runs
