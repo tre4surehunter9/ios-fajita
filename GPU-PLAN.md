@@ -230,3 +230,9 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   **phone/turnip/vktest** (from ios-flame, MIT) carries Turnip raw-deflated inside the executable (blob.S),
   unpacks it to /private/var/tmp/sweetrun and dlopens it (the payload carries one program), with
   TU_DARWIN_SERVICE=SweetGPU (Turnip derives gpu_id 630 from chip 0x06030001). Last line "VKTEST ALL PASS".
+- **0099v on the phone (2026-10-31): launchd killed `sweetrun`** (`CRASH sweetrun sig 9`, reason namespace 1
+  OS_REASON_JETSAM, code 7 JETSAM_REASON_MEMORY_PERPROCESSLIMIT) while reading the 3.3 MB vktest out of the
+  registry: launchd's default daemon limit (no system-wide max_task_pmem on this boot). gputest (69 KB) fit.
+  Kernel **0100**: a process named `sweetrun` gets no per-process memory limit, wherever launchd sets one
+  (memorystatus_update at spawn, memorystatus_set_memlimit_properties_internal later); its children start
+  without one anyway (kern_fork.c). No root change needed.

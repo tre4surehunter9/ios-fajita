@@ -1,0 +1,54 @@
+diff --git a/bsd/kern/kern_memorystatus.c b/bsd/kern/kern_memorystatus.c
+index 1750d3a..99c4789 100644
+--- a/bsd/kern/kern_memorystatus.c
++++ b/bsd/kern/kern_memorystatus.c
+@@ -680,6 +680,21 @@ static int memorystatus_cmd_get_memlimit_excess_np(pid_t pid, uint32_t flags, us
+ static void memorystatus_get_memlimit_properties_internal(proc_t p, memorystatus_memlimit_properties_t *p_entry);
+ static int memorystatus_set_memlimit_properties_internal(proc_t p, memorystatus_memlimit_properties_t *p_entry);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++/*
++ * SWEET: phone/sweetrun, the launcher that runs the test program a boot
++ * image carries (GPU-PLAN.md), reads megabyte-sized programs out of the
++ * IORegistry; launchd's default daemon limit killed it with a 3.3 MB program
++ * (jetsam per-process-limit, run 0099v). It gets no per-process limit.
++ * Its children start without one anyway (kern_fork.c clears p_memstat_memlimit).
++ */
++static bool
++sweet_memlimit_exempt(proc_t p)
++{
++	return strncmp(p->p_name, "sweetrun", sizeof(p->p_name)) == 0;
++}
++#endif
++
+ int proc_get_memstat_priority(proc_t, boolean_t);
+ 
+ static boolean_t memorystatus_idle_snapshot = 0;
+@@ -2499,6 +2514,13 @@ memorystatus_update(proc_t p, int priority, uint64_t user_data, boolean_t is_ass
+ 		boolean_t is_fatal;
+ 		boolean_t use_active;
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++		if (sweet_memlimit_exempt(p)) {
++			memlimit_active = memlimit_inactive = -1;
++			memlimit_active_is_fatal = memlimit_inactive_is_fatal = FALSE;
++		}
++#endif
++
+ 		/*
+ 		 * Posix_spawn'd processes come through this path to instantiate ledger limits.
+ 		 * Forked processes do not come through this path, so no ledger limits exist.
+@@ -7687,6 +7709,13 @@ memorystatus_set_memlimit_properties_internal(proc_t p, memorystatus_memlimit_pr
+ 
+ 	LCK_MTX_ASSERT(&proc_list_mlock, LCK_MTX_ASSERT_OWNED);
+ 
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++	if (sweet_memlimit_exempt(p)) {
++		p_entry->memlimit_active = p_entry->memlimit_inactive = -1;
++		p_entry->memlimit_active_attr = p_entry->memlimit_inactive_attr = 0;
++	}
++#endif
++
+ 	/*
+ 	 * Store the active limit variants in the proc.
+ 	 */
