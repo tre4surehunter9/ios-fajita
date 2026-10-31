@@ -121,6 +121,9 @@ Steps, each its own build and phone test:
   (0.96) in the same pass: nothing cut off, no 3.8 ms CPU copy. (2) Later, as an experiment: report the native
   1080x2340 (framebuffer + MobileGestalt main-screen-width/height/scale); iOS 16 layouts may not accept a
   non-iPhone size.
+- **After the GPU work (user, 2026-10-31): the wallpaper.** PosterBoard (iOS 16 wallpaper renderer) dies
+  with SIGTRAP on start, on CPU- and GPU-rendered boots alike, so the wallpaper is black; root v5 does not
+  change that. Needs its crash log symbolicated (tools/dsc-a2s.py).
 - **After the GPU work (user, 2026-10-31): all of the DDR.** The phone is the 8 GB 6T (Sailfish /proc/iomem:
   System RAM up to 0x27cabffff); XNU uses 0x100000000 + 0xfcc00000 (~3.95 GB, mkadt.py --highmem). First extend
   the high range to ~0x27cac0000 (~5.9 GB: no fixed reservations above 4 GB in the live DT; edi194's XNU on this
