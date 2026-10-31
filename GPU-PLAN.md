@@ -334,3 +334,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   boots), widgets "Waiting..." (chronod not in mtl2-clients), unanswered device queries (gpuCoreCount,
   maxComputeThreadgroupMemory, ...). The fastboot transfer needs the USB-A cable (USB-C to C stalls).
   Next: Phase 4, measure first (frame times, where backboardd's time goes), then the GPU present path.
+- **Kernel patch 0102 (written 2026-10-31): Phase 4 measurement.** Each submission is wrapped in two
+  `CP_REG_TO_MEM` of CP_ALWAYS_ON_COUNTER (64-bit, msm's get_stats_counter) into 64 slots of 128 B (pool +0x1d000,
+  GPU VA 0x40021000); a slot's span counts as GPU busy once its fence has passed. A stats thread prints every 5 s
+  while there is activity: `SWEET GPU: 5s: N submits, GPU busy X ms (Y%), W waits Z ms, P presents (R/s) copy C us
+  each`; SweetFramebuffer counts presents and times its flush + CPU copy. Fence waits: on this kernel `delay()`
+  always blocks (cpu_idle_latency is 0), so the old loop slept/woke every 10 us; now they poll for 50 us, then
+  sleep 200 us at a time (`sweetgpuwait=0` restores the old loop for comparison).

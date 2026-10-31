@@ -1,0 +1,230 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index a719a7b..cffef8d 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -202,6 +202,8 @@ branch_on(const char *name, vm_offset_t reg)
+ #define P_SCRATCH	0x1c000
+ #define P_SQE		0x20000		/* up to 64 KiB, mapped read-only */
+ #define P_ZAP_META	0x30000		/* not mapped: TrustZone reads it by PA */
++#define P_STATS		0x1d000		/* 8 KiB: per-submit CP_ALWAYS_ON stamps (stats) */
++#define VA_STATS	0x40021000u
+ #define VA_RING		0x40000000u
+ #define VA_SQE		0x40010000u
+ #define VA_SCRATCH	0x40020000u
+@@ -575,6 +577,7 @@ cp_smmu(const uint8_t *sqe, uint32_t sqe_len)
+ 	map_pages(P_CP_L3, VA_RING, P_RING, 8);
+ 	map_pages_attr(P_CP_L3, VA_SQE, P_SQE, 16, PTE_PAGE | (1ull << 7));
+ 	map_pages(P_CP_L3, VA_SCRATCH, P_SCRATCH, 1);
++	map_pages(P_CP_L3, VA_STATS, P_STATS, 2);
+ 	/* The SQE microcode minus its first dword, as a6xx_ucode_load. */
+ 	for (uint32_t o = 4; o + 4 <= sqe_len; o += 4) {
+ 		uint32_t v;
+@@ -994,6 +997,36 @@ sweet_gpu_unmap(uint64_t iova, uint64_t size)
+ #define PC_CCU_INVALIDATE_DEPTH	0x18
+ #define PC_CCU_INVALIDATE_COLOR	0x19
+ #define MAX_SUBMIT_IBS		16
++#define CP_REG_TO_MEM		0x3e
++#define CP_ALWAYS_ON_COUNTER	0x0980
++#define STAT_SLOTS		64		/* 128 B each: start stamp at +0, end at +64 (IS_64B writes 64 B) */
++
++/*
++ * Phase 4 measurement: the CP stamps CP_ALWAYS_ON_COUNTER (19.2 MHz) before
++ * and after each submission's IBs (as msm's get_stats_counter); a slot's
++ * time counts as GPU busy once its fence has passed (at slot reuse or at
++ * the 5-second report). Waits are counted with the time spent in them.
++ */
++static uint32_t stat_seq[STAT_SLOTS];
++static bool stat_counted[STAT_SLOTS];
++static uint64_t stat_submits, stat_busy_ticks, stat_waits, stat_wait_ns;
++static uint32_t wait_mode = 1;		/* sweetgpuwait=: 0 the old 10 us delay loop, 1 poll 50 us then 200 us sleeps */
++
++static bool fence_reached(uint32_t seq);
++
++static void
++stat_account(unsigned slot)
++{
++	if (stat_seq[slot] == 0 || stat_counted[slot] || !fence_reached(stat_seq[slot])) {
++		return;
++	}
++	vm_offset_t b = PV(P_STATS) + 128 * slot;
++	uint64_t t0 = rd(b) | ((uint64_t)rd(b + 4) << 32), t1 = rd(b + 64) | ((uint64_t)rd(b + 68) << 32);
++	if (t1 > t0 && t1 - t0 < 19200000ULL * 10) {	/* ignore torn or stale stamps */
++		stat_busy_ticks += t1 - t0;
++	}
++	stat_counted[slot] = true;
++}
+ 
+ /*
+  * As msm's a6xx_submit: invalidate CCU depth and colour, the IBs, then a
+@@ -1009,7 +1042,16 @@ sweet_gpu_submit_ibs(const uint64_t *iova, const uint32_t *dwords, unsigned nib,
+ 	if (gpu_hung || !gpu_kept || nib == 0 || nib > MAX_SUBMIT_IBS) {
+ 		return -1;
+ 	}
+-	uint32_t dw[4 + 4 * MAX_SUBMIT_IBS + 5], n = 0;
++	uint32_t dw[4 + 4 + 4 * MAX_SUBMIT_IBS + 4 + 5], n = 0;
++	lck_mtx_lock(&sweet_gpu_lock);
++	uint32_t s = fence_seq + 1;
++	unsigned slot = s % STAT_SLOTS;
++	stat_account(slot);
++	uint64_t sva = VA_STATS + 128ULL * slot;
++	dw[n++] = pkt7(CP_REG_TO_MEM, 3);
++	dw[n++] = CP_ALWAYS_ON_COUNTER | (2u << 18) | (1u << 30);
++	dw[n++] = (uint32_t)sva;
++	dw[n++] = (uint32_t)(sva >> 32);
+ 	dw[n++] = pkt7(CP_EVENT_WRITE, 1);
+ 	dw[n++] = PC_CCU_INVALIDATE_DEPTH;
+ 	dw[n++] = pkt7(CP_EVENT_WRITE, 1);
+@@ -1020,9 +1062,11 @@ sweet_gpu_submit_ibs(const uint64_t *iova, const uint32_t *dwords, unsigned nib,
+ 		dw[n++] = (uint32_t)(iova[i] >> 32);
+ 		dw[n++] = dwords[i];
+ 	}
++	dw[n++] = pkt7(CP_REG_TO_MEM, 3);
++	dw[n++] = CP_ALWAYS_ON_COUNTER | (2u << 18) | (1u << 30);
++	dw[n++] = (uint32_t)(sva + 64);
++	dw[n++] = (uint32_t)((sva + 64) >> 32);
+ 	uint64_t fva = VA_SCRATCH + FENCE_OFF;
+-	lck_mtx_lock(&sweet_gpu_lock);
+-	uint32_t s = fence_seq + 1;
+ 	dw[n++] = pkt7(CP_EVENT_WRITE, 4);
+ 	dw[n++] = CACHE_FLUSH_TS;
+ 	dw[n++] = (uint32_t)fva;
+@@ -1044,6 +1088,9 @@ sweet_gpu_submit_ibs(const uint64_t *iova, const uint32_t *dwords, unsigned nib,
+ 		wr(GR(CP_RB_WPTR), ring_wptr);
+ 		fence_seq = s;
+ 		*seq = s;
++		stat_seq[slot] = s;
++		stat_counted[slot] = false;
++		stat_submits++;
+ 	} else if (busy) {
+ 		*busy = true;
+ 	}
+@@ -1070,15 +1117,31 @@ sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns)
+ 	if ((int32_t)(seq - fence_seq) > 0) {
+ 		return -1;				/* never submitted */
+ 	}
+-	for (uint64_t t = 0;; t += 10000) {
++	if (fence_reached(seq)) {
++		return 0;
++	}
++	uint64_t t0 = mach_absolute_time(), t0ns, ns = 0;
++	absolutetime_to_nanoseconds(t0, &t0ns);
++	int rc = -1;
++	for (;;) {
+ 		if (fence_reached(seq)) {
+-			return 0;
++			rc = 0;
++			break;
+ 		}
+-		if (gpu_hung || t >= timeout_ns) {
+-			return -1;
++		absolutetime_to_nanoseconds(mach_absolute_time(), &ns);
++		ns -= t0ns;
++		if (gpu_hung || ns >= timeout_ns) {
++			break;
++		}
++		if (wait_mode == 0) {
++			delay(10);
++		} else if (ns >= 50000) {
++			delay(200);			/* blocks: cpu_idle_latency is 0 here, delay() never spins */
+ 		}
+-		delay(10);
+ 	}
++	stat_waits++;
++	stat_wait_ns += ns;
++	return rc;
+ }
+ 
+ /* The kernel's own waits: a timeout means the GPU is stuck; report it once and stop submitting. */
+@@ -1232,6 +1295,39 @@ gpu_selftest(void)
+ 	return (good == 100 && batch == 50) ? 0 : -1;
+ }
+ 
++/* SweetFramebuffer.cpp: panel presents and the time their CPU copies took. */
++extern uint64_t sweet_fb_presents, sweet_fb_copy_ns;
++
++static void
++stats_thread(void *arg __unused, wait_result_t wr_ __unused)
++{
++	uint64_t last_submits = 0, last_busy = 0, last_waits = 0, last_wait_ns = 0, last_pres = 0, last_copy = 0;
++	for (;;) {
++		delay(5000000);
++		lck_mtx_lock(&sweet_gpu_lock);
++		for (unsigned i = 0; i < STAT_SLOTS; i++) {
++			stat_account(i);
++		}
++		uint64_t submits = stat_submits, busy = stat_busy_ticks, waits = stat_waits, wait_ns = stat_wait_ns;
++		lck_mtx_unlock(&sweet_gpu_lock);
++		uint64_t pres = sweet_fb_presents, copy = sweet_fb_copy_ns;
++		if (submits == last_submits && pres == last_pres) {
++			continue;
++		}
++		uint64_t busy_ms = (busy - last_busy) / 19200, np = pres - last_pres;
++		printf("SWEET GPU: 5s: %llu submits, GPU busy %llu ms (%llu%%), %llu waits %llu ms, "
++		    "%llu presents (%llu.%llu/s) copy %llu us each%s\n", submits - last_submits, busy_ms, busy_ms / 50,
++		    waits - last_waits, (wait_ns - last_wait_ns) / 1000000, np, np / 5, (np * 2) % 10,
++		    np ? (copy - last_copy) / np / 1000 : 0, gpu_hung ? ", GPU HUNG" : "");
++		last_submits = submits;
++		last_busy = busy;
++		last_waits = waits;
++		last_wait_ns = wait_ns;
++		last_pres = pres;
++		last_copy = copy;
++	}
++}
++
+ /* After the CP test: widen the CP context to 39 bits, map the arena, self-test, mark ready. */
+ static int
+ gpu_persist(void)
+@@ -1258,6 +1354,10 @@ gpu_persist(void)
+ 	}
+ 	gpu_ready = true;
+ 	printf("SWEET GPU: READY: submissions and fences work, GPU kept up\n");
++	thread_t st;
++	if (kernel_thread_start(stats_thread, NULL, &st) == KERN_SUCCESS) {
++		thread_deallocate(st);
++	}
+ 	return 0;
+ }
+ 
+@@ -1452,6 +1552,7 @@ sweet_a630_init(void)
+ 	gpu_level = on;
+ 	PE_parse_boot_argn("sweetgpupool", &pool_pa, sizeof(pool_pa));
+ 	PE_parse_boot_argn("sweetgpuarena", &arena_size, sizeof(arena_size));
++	PE_parse_boot_argn("sweetgpuwait", &wait_mode, sizeof(wait_mode));
+ 	printf("SWEET GPU: Adreno 630 bring-up (sweetgpu=%u), GMU memory at 0x%llx\n", on, pool_pa);
+ 	thread_t thread;
+ 	if (kernel_thread_start(a630_thread, NULL, &thread) == KERN_SUCCESS) {
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 3bc0a31..aaf75e4 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -53,6 +53,11 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ 
+ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
+ 
++/* Read by bsd/dev/sweet_a630.c's 5-second stats line (Phase 4): presents and their CPU copy time. */
++extern "C" {
++uint64_t sweet_fb_presents, sweet_fb_copy_ns;
++}
++
+ /*
+  * sweetmtl=2: the GPU renders the surfaces (SweetMetal2.bundle, imports of
+  * the client's pages) while this copy reads them through the cacheable
+@@ -412,6 +417,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 			src = 0;
+ 		}
+ 		if (src != 0 && bpe == 4) {
++			uint64_t copy_t0 = mach_absolute_time(), copy_ns;
+ 			if (sweet_fb_gpu_surfaces()) {
+ 				flush_dcache64((addr64_t)(src + s->offset + (uint64_t)sy * s->bytesPerRow),
+ 				    (unsigned)((uint64_t)h * s->bytesPerRow), FALSE);
+@@ -421,6 +427,9 @@ AppleCLCD::present(const uint8_t *rec)
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+ 				    (size_t)w * 4);
+ 			}
++			absolutetime_to_nanoseconds(mach_absolute_time() - copy_t0, &copy_ns);
++			sweet_fb_copy_ns += copy_ns;
++			sweet_fb_presents++;
+ 		}
+ 		s->release();
+ 	}
