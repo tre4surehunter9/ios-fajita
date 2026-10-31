@@ -190,3 +190,8 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   `IO_MAP_SIZE`). Fix in 0097: the arena is mapped whole with `ml_io_map_unmappable(pa, size, VM_WIMG_WCOMB)`
   (kernel_map, KMA_DATA; ios-flame maps its GPU windows the same way). Rule: anything big goes through
   ml_io_map_unmappable, never ml_io_map/ml_io_map_wcomb.
+- **0097 on the phone (2026-10-31, image 0097g, `sweetgpu=3`): PHASE 2.1 PASS.** CP test as before, then
+  `persistent: arena 0xb1000000-0xc1000000 (256 MiB, kernel_map WC), cp context 39-bit`; **self-test sequential
+  100/100 IBs correct, 51 us each; queued 50/50 correct, fence 150**; `READY`, bring-up 145 ms, GPU kept up, and
+  iOS reaches SpringBoard with GX on. CB1 FSR reads `0x400` (bit 10, not one of the fault bits 1-8; to look up).
+  Next: 2.2, the IOKit accelerator service + NativeAdreno user client.
