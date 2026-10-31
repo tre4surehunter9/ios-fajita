@@ -318,3 +318,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   MetalPluginClassName SweetMTL2Device, model "Adreno 630", user client SweetGPUUserClient (also what Turnip opens
   by default: service IOAcceleratorES, type 0x4147). SweetFramebuffer, with sweetmtl=2, cleans+invalidates the
   source rows of a surface (flush_dcache64 by VA) before its CPU copy to the panel.
+- **3.3 written (2026-10-31).** phone/metal2: ios-flame's SweetMetal2.mm, NativeBridgeMetalFrontend.mm/.h (UniXNU's
+  frontend, MIT) and Info.plist; phone/include/IOKit/IOKitLib.h stands in for the SDK's missing IOKit header (only
+  IORegistryEntryGetRegistryEntryID is used). The metal2 workflow builds SweetMetal2.bundle (frontend + bridge, +
+  Turnip; Mach-O files signed individually) and **phone/mtl2install**, which carries the bundle as one raw-DEFLATE
+  archive, writes it to /System/Library/Extensions/SweetMetal2.bundle, creates /var/local (mtl2-clients =
+  SpringBoard; backboardd always) and SIGKILLs backboardd and SpringBoard so launchd restarts them with Metal.
+  Last line "MTL2INSTALL DONE".

@@ -110,6 +110,32 @@ jobs:
           ls -la out
           shasum -a 256 out/* | tee out/SHA256SUMS
 
+      - name: Build SweetMetal2.bundle and mtl2install
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK"
+          B=bundle/SweetMetal2.bundle
+          mkdir -p $B
+          $CC -x objective-c++ -std=c++17 -fobjc-arc -O2 -Wall -Wno-deprecated-declarations -Wno-unused-function \
+            -I phone/include -I phone/metal2 -bundle -o $B/SweetMetal2 \
+            phone/metal2/SweetMetal2.mm phone/metal2/NativeBridgeMetalFrontend.mm \
+            -x none m2v-bridge/target/aarch64-apple-ios/release/libnative_metal_bridge.a -Wl,-dead_strip -lc++ \
+            -framework Foundation -framework Metal -framework IOSurface -framework IOKit -framework CoreFoundation
+          strip -x $B/SweetMetal2
+          cp phone/metal2/Info.plist $B/Info.plist
+          cp turnip-art/out/libvulkan_freedreno.dylib $B/
+          strip -x $B/libvulkan_freedreno.dylib
+          codesign -f -s - $B/libvulkan_freedreno.dylib
+          codesign -f -s - $B/SweetMetal2
+          echo "weak imports:"; nm -m $B/SweetMetal2 | grep "weak external" | grep -v "dynamically looked up" || true
+          ls -la $B
+          python3 phone/mtl2install/pack.py $B install.blob
+          $CC -O2 -Wall -o out/mtl2install phone/mtl2install/mtl2install.c phone/mtl2install/blob.S -lcompression
+          codesign -f -s - out/mtl2install
+          ls -la out/mtl2install
+          shasum -a 256 out/* | tee out/SHA256SUMS
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:
