@@ -1,0 +1,119 @@
+name: metal2
+
+# The metal2vulkan bridge (phone/metal2/bridge, UniXNU's NativeMetal over steelbrain/metal2vulkan) for iOS 16
+# arm64, and m2vtest (the bridge's self-test) with Turnip embedded. Recipe as ios-flame's
+# tools/build-m2v-bridge.sh: metal2vulkan 720ef1ce (UniXNU's pin) + phone/metal2/bridge/patches, Rust 1.98,
+# llvm-as for the two fixture shaders the bridge embeds. Turnip comes from the latest successful "turnip" run
+# on this branch. Artifact "metal2": m2vtest, libnative_metal_bridge.a, build log.
+on:
+  push:
+    branches: [fajita, main]
+    paths:
+      - "phone/metal2/**"
+      - ".github/workflows/metal2.yml"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: GitHub runner image
+        default: macos-15
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  M2V_SHA: 720ef1ce
+  RUST: 1.98.0
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          brew install llvm
+          rustup toolchain install $RUST --profile minimal --target aarch64-apple-ios
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: metal2vulkan source
+        run: |
+          set -e
+          git clone -q --filter=blob:none https://github.com/steelbrain/metal2vulkan m2v
+          git -C m2v checkout -q $M2V_SHA
+          git -C m2v log -1 --format='metal2vulkan %H %cd'
+          for p in phone/metal2/bridge/patches/*.patch; do
+            git -C m2v apply --whitespace=nowarn "../$p" && echo "applied $(basename $p)"
+          done
+
+      - name: Build the bridge
+        run: |
+          set -e
+          OUT=$PWD/m2v-bridge
+          mkdir -p $OUT
+          LLVM_AS=$(brew --prefix llvm)/bin/llvm-as
+          $LLVM_AS -o $OUT/runtime_examples.air m2v/crates/metal2vulkan-validation/fixtures/public/examples/runtime_examples.ll
+          $LLVM_AS -o $OUT/function_constant.air m2v/crates/metal2vulkan-validation/fixtures/public/kernel_function_constant_gate_fold.ll
+          cat > $OUT/Cargo.toml <<CARGO
+          [package]
+          name = "native-metal-bridge"
+          version = "0.1.0"
+          edition = "2024"
+          rust-version = "1.98"
+          [workspace]
+          [lib]
+          crate-type = ["staticlib"]
+          path = "$PWD/phone/metal2/bridge/NativeMetalBridge.rs"
+          [dependencies]
+          metal2vulkan = { path = "$PWD/m2v/crates/metal2vulkan", features = ["ash"] }
+          metal2vulkan-runtime = { path = "$PWD/m2v/crates/metal2vulkan-runtime" }
+          libc = "0.2"
+          sha2 = { version = "0.10", features = ["asm"] }
+          [profile.release]
+          panic = "unwind"
+          debug = 1
+          CARGO
+          sed -i '' 's/^          //' $OUT/Cargo.toml
+          NMB_FIXTURE_AIR=$OUT/runtime_examples.air NMB_FC_AIR=$OUT/function_constant.air IPHONEOS_DEPLOYMENT_TARGET=16.0 \
+            cargo +$RUST build --release --manifest-path $OUT/Cargo.toml --target aarch64-apple-ios \
+            --target-dir $OUT/target > bridge-build.log 2>&1 || { grep -E "^error" -A8 bridge-build.log | head -80; exit 1; }
+          ls -la $OUT/target/aarch64-apple-ios/release/libnative_metal_bridge.a
+
+      - name: Turnip from the latest turnip run
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          id=$(gh run list -R ${{ github.repository }} --workflow turnip.yml --branch ${{ github.ref_name }} \
+               --status success -L 1 --json databaseId -q '.[0].databaseId')
+          echo "turnip run $id"
+          gh run download -R ${{ github.repository }} $id -n turnip -D turnip-art
+          ls -la turnip-art/out
+
+      - name: Build m2vtest
+        run: |
+          set -e
+          mkdir -p out
+          python3 phone/turnip/pack.py turnip-art/out/libvulkan_freedreno.dylib turnip.blob
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK"
+          $CC -O2 -Wall -I phone/metal2 -o out/m2vtest phone/metal2/m2vtest.c phone/turnip/blob.S \
+            m2v-bridge/target/aarch64-apple-ios/release/libnative_metal_bridge.a -Wl,-dead_strip -lcompression
+          codesign -f -s - out/m2vtest
+          cp m2v-bridge/target/aarch64-apple-ios/release/libnative_metal_bridge.a out/
+          file out/m2vtest
+          echo "weak imports:"; nm -m out/m2vtest | grep "weak external" | grep -v "dynamically looked up" || true
+          ls -la out
+          shasum -a 256 out/* | tee out/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metal2
+          path: |
+            out/
+            bridge-build.log

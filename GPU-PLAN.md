@@ -279,3 +279,9 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   `VKTEST ALL PASS: 0 failed`**. UBWC 2.0 config in use. Unrelated background crashes seen on every recent boot
   (driverkitd jetsam kill; occasional sig10 of a random daemon, here lsd). Next: Phase 3, metal2vulkan +
   the Metal plug-in bundle (sweetmtl), then presentation (2.4) for CoreAnimation.
+- **3.1 written (2026-10-31).** phone/metal2: ios-flame's copy of UniXNU's bridge (MIT) + its 8 metal2vulkan
+  patches, and m2vtest (from ios-flame, adapted like vktest: Turnip embedded, TU_DARWIN_SERVICE=SweetGPU, cache in
+  /private/var/tmp/sweetrun; translates every QuartzCore kernel/vertex/fragment pair from the root's
+  default.metallib on the phone). Workflow **metal2**: Rust 1.98 aarch64-apple-ios (deployment 16.0), metal2vulkan
+  720ef1ce + patches, llvm-as fixtures, the bridge static lib, Turnip from the latest turnip run. Last line
+  "M2VTEST PASS".
