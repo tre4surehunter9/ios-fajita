@@ -119,6 +119,9 @@ Steps, each its own build and phone test:
   System RAM up to 0x27cabffff); XNU uses 0x100000000 + 0xfcc00000 (~3.95 GB, mkadt.py --highmem). First extend
   the high range to ~0x27cac0000 (~5.9 GB: no fixed reservations above 4 GB in the live DT; edi194's XNU on this
   phone ran with size 0x17c7a0000), then look at the low bank (carve-outs; part of it is the GPU pool/arena).
+- **Then Wi-Fi (user, 2026-10-31).** WCN3990: its firmware runs on the modem DSP, so: boot the modem (firmware
+  loaded into RAM from the stock images, partitions never written), QRTR/QMI, an ath10k-style driver, and an en0
+  for iOS's Wi-Fi stack; ios-flame's `wland` path (phone/wifi, kernel 0123) is the reference.
 - **Afterwards (Phase 4):** frame rate and presentation (the GPU blit to the panel instead of the CPU copy,
   ios-flame 0095/0119), memory per process, apps.
 
