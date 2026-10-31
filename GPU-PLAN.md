@@ -115,6 +115,10 @@ Steps, each its own build and phone test:
   (backboardd first) and restarts backboardd so it picks up the device. The bundle then stays on the root.
 - **3.4 Milestone: the home screen composited by the GPU.** backboardd through Metal (MTL2 log lines,
   pipelines compiled on the phone, a photo), then SpringBoard (the unlock swipe needs it), then every process.
+- **After the GPU work (user, 2026-10-31): all of the DDR.** The phone is the 8 GB 6T (Sailfish /proc/iomem:
+  System RAM up to 0x27cabffff); XNU uses 0x100000000 + 0xfcc00000 (~3.95 GB, mkadt.py --highmem). First extend
+  the high range to ~0x27cac0000 (~5.9 GB: no fixed reservations above 4 GB in the live DT; edi194's XNU on this
+  phone ran with size 0x17c7a0000), then look at the low bank (carve-outs; part of it is the GPU pool/arena).
 - **Afterwards (Phase 4):** frame rate and presentation (the GPU blit to the panel instead of the CPU copy,
   ios-flame 0095/0119), memory per process, apps.
 
