@@ -294,3 +294,6 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   byte-identical on the real payloads and on stored/fixed/dynamic blocks) unpacks it in `loader.c` to 0xc8000000
   (free low RAM above the GPU arena) with the I-cache on, then loads as before (uncompressed payloads unchanged).
   vktest image 21.3 -> 10.2 MB, m2vtest image 44.7 -> 18.5 MB. The screen shows `UNZIP ... ms=` timing.
+- **0100vz (2026-10-31): compressed payloads work.** ABL put the ramdisk at 0x83700000 (header says 0x81000000:
+  ABL picks its own addresses); `UNZIP in=0x88A39F out=0x131DE50` (8.9 -> 20.0 MB), slow with the MMU off (a few
+  minutes, later item) but correct: XNU booted from it and vktest gave the same VKTEST ALL PASS as uncompressed.
