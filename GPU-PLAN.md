@@ -115,6 +115,8 @@ Steps, each its own build and phone test:
   (backboardd first) and restarts backboardd so it picks up the device. The bundle then stays on the root.
 - **3.4 Milestone: the home screen composited by the GPU.** backboardd through Metal (MTL2 log lines,
   pipelines compiled on the phone, a photo), then SpringBoard (the unlock swipe needs it), then every process.
+- **Later (user, 2026-10-31):** speed up the shim's payload unpacking (MMU off = every byte uncached, minutes
+  for 20 MB): enable the MMU with the unpack area and the ramdisk cacheable, clean + disable before the jump.
 - **Afterwards (Phase 4):** frame rate and presentation (the GPU blit to the panel instead of the CPU copy,
   ios-flame 0095/0119), memory per process, apps.
 
