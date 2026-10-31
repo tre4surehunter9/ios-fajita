@@ -360,3 +360,11 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   entry). Once GX is up: legacy DCVS (DCVS_PERF_SETTING (3<<28)|index, BW 0xff, OOB DCVS set 23 / ack 31, read
   DCVS_RETURN) to the top index (`sweetgpufreq=N` for another). Logs gpucc 0x101c/0x1020 (downstream's gfx3d RCG,
   unverified) before/after.
+- **0104 on the phone (2026-10-31, image 0104s):** cmd-db gfx.lvl 10 levels (top 416), mx.lvl 5 (top 384), cx.lvl 8;
+  **PERF_TABLE err 0** (votes 0x400303 for 257 MHz .. 0x1a00409 for 710), BW_TABLE err 0, **DCVS 710 MHz acked,
+  return 0**; the guessed gfx3d RCG (gpucc 0x101c) stayed 0x2/0x0. User: "sorta smoother but barely any
+  improvement": GPU busy 42-81 %, ~270-450 ms per submission, 1-1.6 presents/s. Either the clock did not change
+  or it is not the limit. Note ~3-5 x 109 ms: RBBM_INTERFACE_HANG_INT_CNTL 0x1fffff = 2.1M XO cycles = 109 ms.
+- **Kernel patch 0105 (written 2026-10-31): diagnostics** on each 5-second line: real GPU clock (CP perf
+  counter 0 = PERF_CP_ALWAYS_COUNT vs the GMU AO counter), RBBM_INT_0 bits latched since the last line
+  (then cleared), CP_HW_FAULT, CB1 FSR/FAR/FSYNR0 (then cleared).

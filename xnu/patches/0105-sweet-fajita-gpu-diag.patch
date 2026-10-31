@@ -1,0 +1,78 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 74d0e36..dd4ead8 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -1406,10 +1406,55 @@ int sweet_rpmh_bcm_vote_top(const char *res);
+ /* SweetFramebuffer.cpp: panel presents and the time their CPU copies took. */
+ extern uint64_t sweet_fb_presents, sweet_fb_copy_ns;
+ 
++#define CP_PERFCTR_CP_SEL0	0x08d0
++#define RBBM_PERFCTR_CP0	0x0400		/* lo, hi at 0x401 */
++#define RBBM_INT_CLEAR_CMD	0x0037
++#define PERF_CP_ALWAYS_COUNT	0
++
++static uint64_t
++gr_rd64(uint32_t word)
++{
++	uint32_t hi, lo;
++	do {
++		hi = rd(GR(word + 1));
++		lo = rd(GR(word));
++	} while (hi != rd(GR(word + 1)));
++	return ((uint64_t)hi << 32) | lo;
++}
++
++/*
++ * 0105 diagnostics on each 5-second line: the GPU core clock (CP perf
++ * counter 0 on PERF_CP_ALWAYS_COUNT, as mainline's hw_init selects it,
++ * against the GMU's 19.2 MHz counter), the RBBM_INT_0 bits latched since the
++ * last line (cleared after reading: 9 CP_HW_ERROR, 20 CACHE_FLUSH_TS = our
++ * fences, 23 RBBM_HANG_DETECT, 24 UCHE_OOB_ACCESS), CP_HW_FAULT, and the CP
++ * context bank's fault status/address (cleared after reading).
++ */
++static void
++stats_diag(char *buf, size_t len, uint64_t *cyc_last, uint64_t *ao_last)
++{
++	uint64_t cyc = gr_rd64(RBBM_PERFCTR_CP0), ao = sweet_gpu_timestamp();
++	uint64_t mhz = (ao > *ao_last && *ao_last) ? (cyc - *cyc_last) * 192 / ((ao - *ao_last) * 10) : 0;
++	*cyc_last = cyc;
++	*ao_last = ao;
++	uint32_t ints = rd(GR(RBBM_INT_0_STATUS));
++	wr(GR(RBBM_INT_CLEAR_CMD), ints);
++	uint32_t fsr = rd(CB1 + CB_FSR), far_lo = rd(CB1 + CB_FAR), far_hi = rd(CB1 + CB_FAR + 4);
++	uint32_t fsynr = rd(CB1 + 0x68);
++	if (fsr) {
++		wr(CB1 + CB_FSR, fsr);
++	}
++	snprintf(buf, len, " | gpu %llu MHz, int0 0x%08x, hw_fault 0x%x, cb1 fsr 0x%x far 0x%x%08x fsynr0 0x%x", mhz,
++	    ints, rd(GR(CP_HW_FAULT)), fsr, far_hi, far_lo, fsynr);
++}
++
+ static void
+ stats_thread(void *arg __unused, wait_result_t wr_ __unused)
+ {
+ 	uint64_t last_submits = 0, last_busy = 0, last_waits = 0, last_wait_ns = 0, last_pres = 0, last_copy = 0;
++	uint64_t cyc_last = 0, ao_last = 0;
++	char diag[160];
++	wr(GR(CP_PERFCTR_CP_SEL0), PERF_CP_ALWAYS_COUNT);
+ 	for (;;) {
+ 		delay(5000000);
+ 		lck_mtx_lock(&sweet_gpu_lock);
+@@ -1419,14 +1464,15 @@ stats_thread(void *arg __unused, wait_result_t wr_ __unused)
+ 		uint64_t submits = stat_submits, busy = stat_busy_ticks, waits = stat_waits, wait_ns = stat_wait_ns;
+ 		lck_mtx_unlock(&sweet_gpu_lock);
+ 		uint64_t pres = sweet_fb_presents, copy = sweet_fb_copy_ns;
++		stats_diag(diag, sizeof(diag), &cyc_last, &ao_last);
+ 		if (submits == last_submits && pres == last_pres) {
+ 			continue;
+ 		}
+ 		uint64_t busy_ms = (busy - last_busy) / 19200, np = pres - last_pres;
+ 		printf("SWEET GPU: 5s: %llu submits, GPU busy %llu ms (%llu%%), %llu waits %llu ms, "
+-		    "%llu presents (%llu.%llu/s) copy %llu us each%s\n", submits - last_submits, busy_ms, busy_ms / 50,
++		    "%llu presents (%llu.%llu/s) copy %llu us each%s%s\n", submits - last_submits, busy_ms, busy_ms / 50,
+ 		    waits - last_waits, (wait_ns - last_wait_ns) / 1000000, np, np / 5, (np * 2) % 10,
+-		    np ? (copy - last_copy) / np / 1000 : 0, gpu_hung ? ", GPU HUNG" : "");
++		    np ? (copy - last_copy) / np / 1000 : 0, gpu_hung ? ", GPU HUNG" : "", diag);
+ 		last_submits = submits;
+ 		last_busy = busy;
+ 		last_waits = waits;
