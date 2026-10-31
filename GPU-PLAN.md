@@ -195,3 +195,13 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   100/100 IBs correct, 51 us each; queued 50/50 correct, fence 150**; `READY`, bring-up 145 ms, GPU kept up, and
   iOS reaches SpringBoard with GX on. CB1 FSR reads `0x400` (bit 10, not one of the fault bits 1-8; to look up).
   Next: 2.2, the IOKit accelerator service + NativeAdreno user client.
+- **Kernel patch 0098 (written 2026-10-31): Phase 2.2 kernel side.** `iokit/Kernel/arm/SweetGPU.cpp`: service
+  `SweetGPU` on IOResources (sweetgpu>=3, fajita; deliberately not IOAcceleratorES, so Metal ignores it until
+  Phase 3), user client `SweetGPUUserClient` speaking NativeAdreno ABI v1 (`SweetGPUABI.h`, MIT, unchanged):
+  per-connection 4 GiB windows from 0x2_0000_0000, BoAlloc from the arena via `withPhysicalAddress` (WC to the
+  CPU through clientMemoryForType, token = handle; mapped-while-freed memory waits as a zombie, as ios-flame),
+  BoImport (pinned caller pages), BoMap (4 KiB page lists), Submit (<=16 IBs, CCU depth/colour invalidate +
+  CACHE_FLUSH_TS, as msm's a6xx_submit), WaitFence (a timeout is no longer a hang), timestamp = GMU AO counter.
+  GetDeviceInfo: chip 0x06030001, GMEM 1 MiB @0x100000, trap base 0x1fffffffff000; **UBWC left unconfigured
+  (version 0): to settle before Turnip (2.3)**. Also the ios-flame pmap fix (`pmap_sync_page_attributes_phys`
+  lost bit 32 of page addresses above 4 GiB).
