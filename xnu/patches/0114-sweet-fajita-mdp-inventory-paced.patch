@@ -1,0 +1,32 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 03449b4..c99724a 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -89,15 +89,18 @@ sweet_mdp_dump(void)
+ 		    "ystride 0x%08x format 0x%08x unpack 0x%08x\n", pipes[i].name, MDP_RD(o), MDP_RD(o + 0x08),
+ 		    MDP_RD(o + 0x0c), MDP_RD(o + 0x10), MDP_RD(o + 0x14), MDP_RD(o + 0x24), MDP_RD(o + 0x30),
+ 		    MDP_RD(o + 0x34));
++		IOSleep(50);		/* bursts are dropped on the USB console */
+ 	}
+ 	for (unsigned i = 0; i < 5; i++) {
+ 		uint32_t o = 0x1000 + 0x200 * i;
+ 		printf("SWEET MDP: ctl%u layer lm0 0x%08x lm1 0x%08x lm2 0x%08x lm5 0x%08x top 0x%08x flush 0x%08x\n", i,
+ 		    MDP_RD(o), MDP_RD(o + 0x4), MDP_RD(o + 0x8), MDP_RD(o + 0x24), MDP_RD(o + 0x14), MDP_RD(o + 0x18));
++		IOSleep(50);		/* bursts are dropped on the USB console */
+ 	}
+ 	for (unsigned i = 0; i < 4; i++) {
+ 		uint32_t o = 0x70000 + 0x800 * i;
+ 		printf("SWEET MDP: pingpong%u tear_check 0x%08x autorefresh 0x%08x\n", i, MDP_RD(o), MDP_RD(o + 0x30));
++		IOSleep(50);		/* bursts are dropped on the USB console */
+ 	}
+ #undef MDP_RD
+ }
+@@ -287,7 +290,7 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	AppleCLCD *fb = (AppleCLCD *)owner;
+ 	uint64_t now = mach_absolute_time();
+ 	uint64_t count = ++fb->fVsyncCount;
+-	if (count == 20 * 1000000 / SWEET_FB_VSYNC_US) {
++	if (count == 20 * 1000000 / SWEET_FB_VSYNC_US || count == 60 * 1000000 / SWEET_FB_VSYNC_US) {
+ 		/* ~20 s in: the early-boot burst drops lines on the USB console. */
+ 		sweet_mdp_dump();
+ 	}

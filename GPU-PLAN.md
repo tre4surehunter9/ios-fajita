@@ -468,3 +468,7 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   mtl2install's SWAR blob (+ /var/local/mtl2-clients, mtl2.log) since a full userdata flash drops the copy
   mtl2install put on the phone. `work/update-root-v5.sh` (v4 -> v5, full .simg: userdata is no longer
   identical to v4, so no sparsediff). Black wallpaper is a separate bug (PosterBoard SIGTRAP).
+- **0113 on the phone (2026-10-31, first boot of root v5):** only CTL1-4 (all layers 0, top 0x1f00) and
+  PINGPONG0-3 arrived; **PINGPONG0 AUTOREFRESH_CONFIG 0x80000001** (enabled, every frame): ABL left the
+  command-mode panel on auto-refresh from the splash buffer. The 8 SSPP lines and CTL0 were dropped (burst).
+  **0114:** 50 ms between readout lines, printed at ~20 s and ~60 s.
