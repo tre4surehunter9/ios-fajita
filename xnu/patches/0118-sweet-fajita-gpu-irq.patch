@@ -1,0 +1,165 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 45f812e..fd82072 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -920,6 +920,9 @@ static vm_offset_t arena_va;
+ static uint32_t pt_next;
+ static uint8_t chunk_used[(ARENA_MAX - ARENA_PT_SIZE) / ARENA_CHUNK];
+ static uint32_t fence_seq;
++static bool gpu_irq_on;				/* 0118: fences wake waiters through SPI 300 */
++static int gpu_irq_event;
++static uint64_t gpu_irq_count;
+ static volatile bool gpu_ready, gpu_hung;
+ static LCK_GRP_DECLARE(sweet_gpu_grp, "sweet_gpu");
+ static LCK_MTX_DECLARE(sweet_gpu_lock, &sweet_gpu_grp);
+@@ -1183,7 +1186,7 @@ sweet_gpu_submit_ibs(const uint64_t *iova, const uint32_t *dwords, unsigned nib,
+ 	dw[n++] = (uint32_t)((sva + 64) >> 32);
+ 	uint64_t fva = VA_SCRATCH + FENCE_OFF;
+ 	dw[n++] = pkt7(CP_EVENT_WRITE, 4);
+-	dw[n++] = CACHE_FLUSH_TS;
++	dw[n++] = CACHE_FLUSH_TS | (gpu_irq_on ? (1u << 31) : 0);	/* IRQ: RBBM_INT_0 CP_CACHE_FLUSH_TS */
+ 	dw[n++] = (uint32_t)fva;
+ 	dw[n++] = (uint32_t)(fva >> 32);
+ 	dw[n++] = s;
+@@ -1380,6 +1383,14 @@ sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns)
+ 		}
+ 		if (wait_mode == 0) {
+ 			delay(10);
++		} else if (gpu_irq_on) {
++			/* Woken by the fence interrupt; the 200 us timeout covers a lost or missing one. */
++			assert_wait_timeout((event_t)&gpu_irq_event, THREAD_UNINT, 200, NSEC_PER_USEC);
++			if (fence_reached(seq) || gpu_hung) {
++				clear_wait(current_thread(), THREAD_AWAKENED);
++			} else {
++				thread_block(THREAD_CONTINUE_NULL);
++			}
+ 		} else if (ns >= 50000) {
+ 			delay(200);			/* blocks: cpu_idle_latency is 0 here, delay() never spins */
+ 		}
+@@ -1550,6 +1561,68 @@ extern uint64_t sweet_fb_presents, sweet_fb_copy_ns;
+ #define RBBM_INT_CLEAR_CMD	0x0037
+ #define PERF_CP_ALWAYS_COUNT	0
+ 
++/*
++ * 0118: the GPU interrupt. mainline sdm845.dtsi gpu: interrupts = <GIC_SPI 300 IRQ_TYPE_LEVEL_HIGH> (INTID
++ * 332). TrustZone owns Group 0, so as the timer and IPIs it reaches sleh_irq as a Group 1 IRQ through
++ * sweet_spi_hook. Distributor (GICD 0x17a00000, GICv3: ICFGR 0xc00, IPRIORITYR 0x400, IROUTER 0x6000,
++ * ISENABLER 0x100): level, an NS priority, routed to CPU0 (MPIDR 0), enabled, then read back: a secure
++ * (Group 0) SPI reads as disabled from the non-secure side and the GPU keeps polling. On the GPU:
++ * RBBM_INT_0_MASK (0x38) = CP_CACHE_FLUSH_TS (bit 20), and each submission's fence CACHE_FLUSH_TS carries
++ * the IRQ bit (msm a6xx_submit). The handler clears RBBM_INT_0 (RBBM_INT_CLEAR_CMD) before the EOI and wakes
++ * fence waiters. Boot-arg sweetgpuirq=0: polling as before.
++ */
++#define GPU_INTID		332u
++#define GICD_PA			0x17a00000ULL
++#define RBBM_INT_0_MASK		0x0038
++#define INT_CP_CACHE_FLUSH_TS	(1u << 20)
++
++extern void (*sweet_spi_hook)(uint32_t intid);
++
++static void
++gpu_irq(uint32_t intid)
++{
++	if (intid != GPU_INTID) {
++		return;
++	}
++	uint32_t st = rd(GR(RBBM_INT_0_STATUS));
++	wr(GR(RBBM_INT_CLEAR_CMD), st);
++	gpu_irq_count++;
++	thread_wakeup((event_t)&gpu_irq_event);
++}
++
++static void
++gpu_irq_setup(void)
++{
++	uint32_t on = 1;
++	PE_parse_boot_argn("sweetgpuirq", &on, sizeof(on));
++	vm_offset_t gicd = on ? ml_io_map(GICD_PA, 0x10000) : 0;
++	if (gicd == 0) {
++		return;
++	}
++	uint32_t n = GPU_INTID, bit = 1u << (n % 32);
++	uint32_t group = rd(gicd + 0x80 + 4 * (n / 32)) & bit;
++	vm_offset_t cfg = gicd + 0xc00 + 4 * (n / 16);
++	wr(cfg, rd(cfg) & ~(2u << (2 * (n % 16))));		/* level */
++	vm_offset_t pri = gicd + 0x400 + (n & ~3u);
++	uint32_t sh = 8 * (n % 4);
++	wr(pri, (rd(pri) & ~(0xffu << sh)) | (0xa0u << sh));
++	wr(gicd + 0x6000 + 8 * n, 0);				/* IROUTER: CPU0 */
++	wr(gicd + 0x6000 + 8 * n + 4, 0);
++	wr(GR(RBBM_INT_CLEAR_CMD), 0xffffffffu);
++	wr(GR(RBBM_INT_0_MASK), INT_CP_CACHE_FLUSH_TS);
++	sweet_spi_hook = gpu_irq;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	wr(gicd + 0x100 + 4 * (n / 32), bit);			/* ISENABLER */
++	bool enabled = (rd(gicd + 0x100 + 4 * (n / 32)) & bit) != 0;
++	if (!enabled) {
++		wr(GR(RBBM_INT_0_MASK), 0);
++		sweet_spi_hook = NULL;
++	}
++	gpu_irq_on = enabled;
++	printf("SWEET GPU: interrupt INTID %u: group bit %u, %s\n", n, group ? 1 : 0,
++	    enabled ? "enabled, fences wake waiters" : "NOT ENABLED (secure?), polling as before");
++}
++
+ static uint64_t
+ gr_rd64(uint32_t word)
+ {
+@@ -1577,14 +1650,19 @@ stats_diag(char *buf, size_t len, uint64_t *cyc_last, uint64_t *ao_last)
+ 	*cyc_last = cyc;
+ 	*ao_last = ao;
+ 	uint32_t ints = rd(GR(RBBM_INT_0_STATUS));
+-	wr(GR(RBBM_INT_CLEAR_CMD), ints);
++	if (!gpu_irq_on) {
++		wr(GR(RBBM_INT_CLEAR_CMD), ints);	/* with the IRQ on, the handler owns the bits */
++	}
+ 	uint32_t fsr = rd(CB1 + CB_FSR), far_lo = rd(CB1 + CB_FAR), far_hi = rd(CB1 + CB_FAR + 4);
+ 	uint32_t fsynr = rd(CB1 + 0x68);
+ 	if (fsr) {
+ 		wr(CB1 + CB_FSR, fsr);
+ 	}
+-	snprintf(buf, len, " | gpu %llu MHz, int0 0x%08x, hw_fault 0x%x, cb1 fsr 0x%x far 0x%x%08x fsynr0 0x%x", mhz,
+-	    ints, rd(GR(CP_HW_FAULT)), fsr, far_hi, far_lo, fsynr);
++	static uint64_t irq_last;
++	uint64_t irqs = gpu_irq_count;
++	snprintf(buf, len, " | gpu %llu MHz, irqs %llu%s, int0 0x%08x, hw_fault 0x%x, cb1 fsr 0x%x far 0x%x%08x fsynr0 0x%x",
++	    mhz, irqs - irq_last, gpu_irq_on ? "" : " (polling)", ints, rd(GR(CP_HW_FAULT)), fsr, far_hi, far_lo, fsynr);
++	irq_last = irqs;
+ }
+ 
+ static void
+@@ -1724,6 +1802,7 @@ cp_stage(void)
+ 				    m, t, rd(GR(RBBM_INT_0_STATUS)));
+ 				if (pass && gpu_level >= 3 && gpu_persist() == 0) {
+ 					gpu_kept = true;
++					gpu_irq_setup();
+ 					return;			/* zap, GPU_SET and GX stay on */
+ 				}
+ 			}
+diff --git a/osfmk/arm64/sleh.c b/osfmk/arm64/sleh.c
+index 24f1abc..67e2ad7 100644
+--- a/osfmk/arm64/sleh.c
++++ b/osfmk/arm64/sleh.c
+@@ -1847,6 +1847,11 @@ handle_simd_trap(arm_saved_state_t *state, uint32_t esr)
+ 	__builtin_unreachable();
+ }
+ 
++#if defined(SWEET)
++/* 0118: device interrupts (INTID >= 32) for drivers that install a hook (bsd/dev/sweet_a630.c: the GPU). */
++void (*sweet_spi_hook)(uint32_t intid);
++#endif
++
+ void
+ sleh_irq(arm_saved_state_t *state)
+ {
+@@ -1880,6 +1885,10 @@ sleh_irq(arm_saved_state_t *state)
+ 		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 		__builtin_arm_isb(ISB_SY);
+ 		cpu_signal_handler();
++	} else if (intid >= 32 && sweet_spi_hook != NULL) {
++		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
++		sweet_spi_hook(intid);			/* clears the device's level before the EOI */
++		__builtin_arm_wsr64("ICC_EOIR1_EL1", iar);
+ 	} else {
+ 		sleh_interrupt_handler_prologue(state, DBG_INTR_TYPE_OTHER);
+ 		if (cdp->interrupt_handler) {

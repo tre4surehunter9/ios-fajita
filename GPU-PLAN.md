@@ -508,3 +508,9 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   blit and the flips run and the CPU copy is gone.
 - **Kernel patch 0117 (2026-10-31): flip + GPU blit are the default** with GPU surfaces (sweetmtl=2);
   `sweetfb_flip=0` / `sweetfb_gpublit=0` turn them off.
+- **Kernel patch 0118 (2026-10-31): GPU interrupts.** sleh_irq (SWEET) gains `sweet_spi_hook` for INTID >= 32.
+  sweet_a630.c: SPI 300 (INTID 332, level, sdm845.dtsi) in the GICD: ICFGR level, priority 0xa0, IROUTER CPU0,
+  ISENABLER, read back (secure SPIs read disabled: then polling as before); RBBM_INT_0_MASK = CP_CACHE_FLUSH_TS;
+  every fence CACHE_FLUSH_TS carries the IRQ bit; the handler clears RBBM_INT_0 before the EOI and wakes
+  waiters; waits sleep on the event with a 200 us timeout (so no IRQ = the old polling). Stats show `irqs N`
+  per 5 s and no longer clear RBBM_INT_0 when the IRQ is on. Boot-arg `sweetgpuirq=0`.
