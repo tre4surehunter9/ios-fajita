@@ -385,3 +385,18 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   0x4..0x12/0x100..0x101/0x180..0x184 and PDC enable/TCS1/TCS3/seq read back before the wake, RSCC_CONTROL req/ack
   and RSC status after it; before/after DCVS: RPMH_POWER_STATE, RPMH_CTRL, G2H info, DCVS registers, gpucc PLL0
   (0x0) / PLL1 (0x100) / GX GDSC + gfx3d registers, the first 128 bytes of the GMU log.
+- **0106 on the phone (2026-10-31, images 0106s/0106c): dump mode (05c6:900e) during bring-up**, before USB, so
+  read from the on-screen console (0106c = no sweetfb_noconsole). The last line printed was `gpucc pll1`, so the
+  read of gpucc 0x100c..0x1038 (12 words) is what trapped: some register in 0x1010..0x1038 is protected
+  (0x100c, 0x101c and 0x1020 read fine on their own). Findings before that:
+  - cmd-db ARC tail: mss.tmr 0x30064, ddr.lvl 0x30070, ddr.tmr 0x30074, **xo.lvl 0x30080**, xo.tmr 0x30084; gfx.lvl
+    is 0x30050. Mainline's hard-coded a630 PDC address 0x30080 is xo.lvl on this phone.
+  - RSCC reads back what we write (0x4 = 0x01000000, 0x8..0xa = 0x4520/0x4510/0x4514, seq a7a586a0 ...); PDC enable
+    reads 0x00000001 (bit 31 not readable), TCS1/TCS3 hold our commands, pdc seq mem febea1e1 a5a4a3a2 ...
+  - RSC wake: req 0x2, ack 0x0, RSC status 0x01000000, busy 0. **Mainline never sends this wake on a cold boot**
+    (a6xx_rpmh_start returns early unless GMU_STATUS_PDC_SLEEP, set only by rpmh_stop), so the missing ack is
+    expected and not the fault.
+  - Before DCVS: RPMH_POWER_STATE 0xf, RPMH_CTRL 0xf11, G2H info 0, DCVS perf/bw/ret 0.
+  - **gpucc PLL0 @0x0: 01000005 00000000 00000000 00000007 00004804 20485699 00002067 40000000: L_VAL 0, no lock
+    bit: the GPU core PLL is off**; PLL1 @0x100: mode 0, L 0 (off too). gfx3d RCG 0x101c/0x1020 = 0x2/0x0 = XO.
+  - Conclusion: the GMU acks DCVS but never brings up PLL0; the RSC-ack suspicion is cleared.
