@@ -121,6 +121,11 @@ Steps, each its own build and phone test:
   (0.96) in the same pass: nothing cut off, no 3.8 ms CPU copy. (2) Later, as an experiment: report the native
   1080x2340 (framebuffer + MobileGestalt main-screen-width/height/scale); iOS 16 layouts may not accept a
   non-iPhone size.
+- **After 0118 (user asked what else speeds it up, 2026-10-31).** GPU busy is 1-17 % at 710 MHz, so the rest is
+  CPU-side: (1) **CPU clock**: nothing drives the SDM845 CPU DVFS (cpufreq-hw/OSM), the cores likely run at ABL's
+  clock; measure first (PMU cycle counter vs the timer), then drive it. (2) **Don't block the swap on the
+  flip**: three scan-out buffers, return after the blit, flip latches in the background. (3) Profile
+  backboardd/SpringBoard (sampler). (4) UBWC frame buffers etc., small while the GPU idles.
 - **When the GPU work ends (user, 2026-10-31): docs pass before anything else.** README.md (what fajita
   does now, build/boot recipe), PORTING.md (GPU phases done, hardware facts: GMU/RPMh/PLL0/MDP, what is open),
   GPU-PLAN.md condensed to a summary + patch list (0094..), then fast-forward main to the GPU milestone.
