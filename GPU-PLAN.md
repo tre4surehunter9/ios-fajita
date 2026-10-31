@@ -486,3 +486,7 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   ABL's 36 MiB cont_splash (0x9d400000 + 12 / 24 MiB, stride 4352, WC), the CPU copy goes there, then VIG0
   SRC0_ADDR/YSTRIDE0 + CTL0 FLUSH bit 0, wait for the bit to clear (50 ms, then CTL_START, 50 ms); not latched
   = back to the splash buffer, test off. Logs `SWEET FLIP: ...` for the first 6 flips.
+- **0115 flip test on the phone (2026-10-31): works.** Display SMMU: MDSS streams 0x880/0xc80 (SMR0/1) ->
+  CB0, CBAR 0x10003, **SCTLR 0xe0 (M = 0: no translation)**, so the MDP scans physical addresses. Flips to
+  0x9e000000 / 0x9ec00000 (stride 4352) **latched on the CTL0 flush in 1-13 ms**; screen normal (user); 15
+  presents/s at 709 MHz. Next: 0116, the A6xx 2D blit (scaled) into the back buffer instead of the CPU copy.
