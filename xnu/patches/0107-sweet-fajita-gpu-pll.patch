@@ -1,0 +1,273 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index b9cf4fb..74640bb 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -267,20 +267,6 @@ cx_power_on(void)
+ 	return rc;
+ }
+ 
+-void sweet_rpmh_dump_slave(unsigned want);
+-
+-/* 0106 diagnostics: n registers from base (word stride), one line. */
+-static void
+-dump_regs(const char *what, vm_offset_t base, uint32_t first_word, unsigned n)
+-{
+-	char line[200];
+-	int len = snprintf(line, sizeof(line), "SWEET GPU: %s @%#x:", what, first_word);
+-	for (unsigned i = 0; i < n && len < (int)sizeof(line) - 10; i++) {
+-		len += snprintf(line + len, sizeof(line) - (size_t)len, " %08x", rd(base + 4 * (first_word + i)));
+-	}
+-	printf("%s\n", line);
+-}
+-
+ /* a6xx_gmu_rpmh_init (a630) + a6xx_rpmh_start. */
+ static void
+ rpmh_init(void)
+@@ -318,21 +304,8 @@ rpmh_init(void)
+ 	wr(w.pdc + 4 * 0x1148, 0);
+ 	wr(w.pdc + 4 * 0x1140, 0x80000001);
+ 
+-	/* 0106: what the RSC and PDC hold before the wake request, and the cmd-db rail list. */
+-	sweet_rpmh_dump_slave(3);
+-	dump_regs("rscc status/handshake", RSCC(0), 0x004, 15);	/* 0x4..0x12 */
+-	dump_regs("rscc override/busy", RSCC(0), 0x100, 2);
+-	dump_regs("rscc seq", RSCC(0), 0x180, 5);
+-	dump_regs("pdc enable/seq-start", w.pdc, 0x1140, 9);
+-	dump_regs("pdc tcs1", w.pdc, 0x1572, 12);
+-	dump_regs("pdc tcs3", w.pdc, 0x15d6, 12);
+-	dump_regs("pdc seq mem", w.pdc_seq, 0, 5);
+-	printf("SWEET GPU: gmu rscc req 0x%x ack 0x%x before the wake\n", rd(G(GMU_RSCC_REQ)), rd(G(GMU_RSCC_ACK)));
+ 	wr(G(GMU_RSCC_REQ), 1u << 1);
+ 	int ack = wait_bits(G(GMU_RSCC_ACK), 1u << 1, true, 10000);
+-	printf("SWEET GPU: gmu rscc req 0x%x ack 0x%x after the wake request\n", rd(G(GMU_RSCC_REQ)), rd(G(GMU_RSCC_ACK)));
+-	dump_regs("rscc status after wake", RSCC(0), 0x004, 1);
+-	dump_regs("rscc busy after wake", RSCC(0), 0x101, 1);
+ 	int busy = wait_bits(RSCC(0x101), ~0u, false, 10000);
+ 	wr(G(GMU_RSCC_REQ), 0);
+ 	printf("SWEET GPU: pdc 0x%08x, rsc wake ack %d idle %d (no ack is normal on this phone)\n",
+@@ -511,6 +484,7 @@ static const uint16_t gpu_rpmh[NGPU_LEVELS] = { 0, 64, 128, 192, 256, 320, 384,
+ static const uint32_t gmu_khz[NGMU_LEVELS] = { 0, 200000, 400000 };
+ static const uint16_t gmu_rpmh[NGMU_LEVELS] = { 0, 48, 128 };				/* MIN_SVS, SVS */
+ static bool perf_table_sent;
++static uint32_t gpu_gx_votes[NGPU_LEVELS];		/* the perf table's gx votes, for the GMU boot vote */
+ 
+ static int
+ arc_index(const uint16_t *arc, int n, unsigned level, bool clamp)
+@@ -586,6 +560,9 @@ hfi_perf_tables(void)
+ 	}
+ 	uint32_t hb = hfi_cmd(3, bw, 159, r), eb = r[2];
+ 	perf_table_sent = hp && hb && ep == 0 && eb == 0;
++	for (int i = 0; i < NGPU_LEVELS; i++) {
++		gpu_gx_votes[i] = gx[i];
++	}
+ 	printf("SWEET GPU: hfi PERF_TABLE 0x%x err %u (gx votes 0x%x .. 0x%x), BW_TABLE 0x%x err %u\n", hp, ep, gx[1],
+ 	    gx[NGPU_LEVELS - 1], hb, eb);
+ }
+@@ -1633,24 +1610,16 @@ cp_stage(void)
+ /*
+  * a6xx_gmu_set_freq, legacy path: DCVS vote for a perf index (sweetgpufreq=,
+  * default the top, 710 MHz), bus left to the firmware (0xff), DCVS OOB set +
+- * clear. gpucc 0x101c/0x1020 is downstream's gx_gfx3d RCG (not in mainline's
+- * gpucc-sdm845.c: the GMU owns it); only read, as a before/after hint.
++ * clear. The GMU acks it but never starts the GPU PLL on this phone (0106:
++ * gpucc PLL0 L_VAL 0, gfx3d RCG on XO; the GPU ran at ~9.6 MHz).
+  */
+ static uint32_t gpu_freq_index = NGPU_LEVELS - 1;
++static uint32_t gpu_clk_index;				/* sweetgpuclk=N: we start PLL0 ourselves (0 = off) */
+ 
+ static void
+ gpu_set_freq(void)
+ {
+ 	uint32_t idx = gpu_freq_index < NGPU_LEVELS ? gpu_freq_index : NGPU_LEVELS - 1;
+-	uint32_t rcg0 = rd(w.gpucc + 0x101c), cfg0 = rd(w.gpucc + 0x1020);
+-	/* 0106: the GMU's power/RPMh view and the gpucc PLLs (downstream: pll0 at 0x0, pll1 at 0x100) before DCVS. */
+-	printf("SWEET GPU: before DCVS: rpmh state 0x%x, rpmh ctrl 0x%x, g2h info 0x%x, dcvs perf 0x%x bw 0x%x ret 0x%x\n",
+-	    rd(G(GMU_RPMH_PSTATE)), rd(G(GMU_RPMH_CTRL)), rd(G(GMU_G2H_INFO)), rd(G(GMU_DCVS_PERF_SETTING)),
+-	    rd(G(GMU_DCVS_BW_SETTING)), rd(G(GMU_DCVS_RETURN)));
+-	dump_regs("gpucc pll0", w.gpucc, 0x0, 8);
+-	dump_regs("gpucc pll1", w.gpucc, 0x40, 8);
+-	dump_regs("gpucc gx gdsc/gfx3d", w.gpucc, 0x1003, 12);	/* 0x100c .. 0x1038 */
+-	dump_regs("gpucc gfx3d cbcr", w.gpucc, 0x1015, 1);		/* 0x1054 */
+ 	wr(G(GMU_DCVS_ACK_OPTION), 0);
+ 	wr(G(GMU_DCVS_PERF_SETTING), (3u << 28) | idx);
+ 	wr(G(GMU_DCVS_BW_SETTING), 0xff);
+@@ -1658,22 +1627,94 @@ gpu_set_freq(void)
+ 	int rc = wait_bits(G(GMU_G2H_INFO), 1u << OOB_DCVS_ACK, true, 10000);
+ 	wr(G(GMU_G2H_CLR), 1u << OOB_DCVS_ACK);
+ 	wr(G(GMU_H2G_SET), 1u << OOB_DCVS_ACK);			/* a6xx_gmu_clear_oob */
+-	printf("SWEET GPU: DCVS %u MHz (index %u): oob %s, return %d, gfx3d rcg 0x%x/0x%x -> 0x%x/0x%x\n",
+-	    gpu_khz[idx] / 1000, idx, rc ? "NOT ACKED" : "acked", (int)rd(G(GMU_DCVS_RETURN)), rcg0, cfg0,
+-	    rd(w.gpucc + 0x101c), rd(w.gpucc + 0x1020));
+-	delay(50000);
+-	printf("SWEET GPU: after DCVS: rpmh state 0x%x, g2h info 0x%x\n", rd(G(GMU_RPMH_PSTATE)), rd(G(GMU_G2H_INFO)));
+-	dump_regs("gpucc pll0 after", w.gpucc, 0x0, 8);
+-	dump_regs("gmu log", PV(P_LOG), 0, 16);
+-	dump_regs("gmu log+64", PV(P_LOG), 16, 16);
++	printf("SWEET GPU: DCVS %u MHz (index %u): oob %s, return %d\n", gpu_khz[idx] / 1000, idx,
++	    rc ? "NOT ACKED" : "acked", (int)rd(G(GMU_DCVS_RETURN)));
++}
++
++/*
++ * The GPU core clock by hand (0107, sweetgpuclk=N, 1..7). Facts from
++ * downstream gpucc-sdm845.c (sdm845 v2): gpu_cc_pll0 is a Fabia PLL at gpucc
++ * +0x0; gx_gfx3d_clk_src is an RCG at +0x101c (CMD) / +0x1020 (CFG), no M/N,
++ * input 1 = crc_div = PLL0 out_even / 1, every OPP at divider 1, so PLL0 runs
++ * at the GPU frequency. Fabia register offsets and the enable order are
++ * mainline clk-alpha-pll.c's (alpha_pll_fabia_enable). The rail: the GMU's
++ * boot vote (gx_up_and_back) is set to this level's perf-table indices
++ * before GX comes up. If the PLL does not lock, the RCG stays on XO.
++ */
++#define PLL0_MODE		0x0000
++#define PLL0_L_VAL		0x0004
++#define PLL0_USER_CTL		0x000c
++#define PLL0_STATUS		0x0024
++#define PLL0_OPMODE		0x002c
++#define PLL0_FRAC		0x0038
++#define PLL_OUTCTRL		(1u << 0)
++#define PLL_RESET_N		(1u << 2)
++#define PLL_LOCK_DET		(1u << 31)
++#define PLL_OUT_MASK		0x7u		/* main, even, odd outputs */
++#define PLL_EVEN_DIV_MASK	(0xfu << 8)
++#define GFX3D_CMD_RCGR		0x101c
++#define GFX3D_CFG_RCGR		0x1020
++#define RCG_UPDATE		(1u << 0)
++#define RCG_ROOT_OFF		(1u << 31)
++
++static void
++gpu_clk_set(uint32_t level)
++{
++	vm_offset_t cc = w.gpucc;
++	uint64_t hz = (uint64_t)gpu_khz[level] * 1000;
++	uint32_t l = (uint32_t)(hz / 19200000), frac = (uint32_t)(((hz % 19200000) << 16) / 19200000);
++	printf("SWEET GPU: clk before: pll0 mode 0x%08x L 0x%x frac 0x%x opmode 0x%x user 0x%x status 0x%x, "
++	    "gfx3d rcg 0x%x/0x%x\n", rd(cc + PLL0_MODE), rd(cc + PLL0_L_VAL), rd(cc + PLL0_FRAC), rd(cc + PLL0_OPMODE),
++	    rd(cc + PLL0_USER_CTL), rd(cc + PLL0_STATUS), rd(cc + GFX3D_CMD_RCGR), rd(cc + GFX3D_CFG_RCGR));
++	if ((rd(cc + GFX3D_CFG_RCGR) & 0x700) != 0) {
++		printf("SWEET GPU: clk: gfx3d not on XO, left alone\n");
++		return;
++	}
++	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) & ~PLL_OUTCTRL);
++	wr(cc + PLL0_OPMODE, 0);				/* STANDBY */
++	wr(cc + PLL0_L_VAL, l);
++	wr(cc + PLL0_FRAC, frac);
++	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_RESET_N);
++	wr(cc + PLL0_OPMODE, 1);				/* RUN */
++	unsigned us = 0;
++	while (!(rd(cc + PLL0_MODE) & PLL_LOCK_DET) && us < 1000) {
++		delay(10);
++		us += 10;
++	}
++	uint32_t mode = rd(cc + PLL0_MODE);
++	if (!(mode & PLL_LOCK_DET)) {
++		printf("SWEET GPU: clk: PLL0 NOT LOCKED at %u MHz (mode 0x%08x status 0x%x); gfx3d stays on XO\n",
++		    gpu_khz[level] / 1000, mode, rd(cc + PLL0_STATUS));
++		return;
++	}
++	wr(cc + PLL0_USER_CTL, (rd(cc + PLL0_USER_CTL) & ~PLL_EVEN_DIV_MASK) | PLL_OUT_MASK);
++	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_OUTCTRL);
++	wr(cc + GFX3D_CFG_RCGR, (1u << 8) | 1u);		/* input 1 (crc_div), divider 1 */
++	wr(cc + GFX3D_CMD_RCGR, rd(cc + GFX3D_CMD_RCGR) | RCG_UPDATE);
++	us = 0;
++	while ((rd(cc + GFX3D_CMD_RCGR) & RCG_UPDATE) && us < 1000) {
++		delay(10);
++		us += 10;
++	}
++	uint32_t cmd = rd(cc + GFX3D_CMD_RCGR);
++	printf("SWEET GPU: clk: PLL0 locked at %u MHz (L 0x%x frac 0x%x, mode 0x%08x), gfx3d rcg 0x%x/0x%x%s\n",
++	    gpu_khz[level] / 1000, l, frac, rd(cc + PLL0_MODE), cmd, rd(cc + GFX3D_CFG_RCGR),
++	    (cmd & RCG_UPDATE) ? " UPDATE STUCK" : (cmd & RCG_ROOT_OFF) ? " ROOT OFF" : "");
+ }
+ 
+ static void
+ gx_up_and_back(void)
+ {
+ 	wr(G(GMU_BOOT_SLUMBER), 0);
+-	wr(G(GMU_GX_VOTE), GX_ARC_IDX);
+-	wr(G(GMU_MX_VOTE), GX_ARC_IDX);
++	uint32_t gxv = GX_ARC_IDX, mxv = GX_ARC_IDX;
++	if (gpu_clk_index && perf_table_sent) {
++		gxv = gpu_gx_votes[gpu_clk_index] & 0xff;
++		mxv = (gpu_gx_votes[gpu_clk_index] >> 8) & 0xff;
++		printf("SWEET GPU: boot vote gfx index %u, mx index %u (for %u MHz)\n", gxv, mxv,
++		    gpu_khz[gpu_clk_index] / 1000);
++	}
++	wr(G(GMU_GX_VOTE), gxv);
++	wr(G(GMU_MX_VOTE), mxv);
+ 	int rc = oob_boot_slumber();
+ 	printf("SWEET GPU: gx rail %s (rpmh state 0x%x, sptprac 0x%x)\n", rc ? "OOB NOT ACKED" : "on",
+ 	    rd(G(GMU_RPMH_PSTATE)), rd(G(GMU_SPTPRAC_STATUS)));
+@@ -1693,6 +1734,9 @@ gx_up_and_back(void)
+ 	printf("SWEET GPU: sptprac %s (0x%x), gx gdsc 0x%08x\n", sp ? "FAILED" : "on", rd(G(GMU_SPTPRAC_STATUS)), gdscr);
+ 	if (!sp && (gdscr & (1u << 31)) && perf_table_sent) {
+ 		gpu_set_freq();
++		if (gpu_clk_index) {
++			gpu_clk_set(gpu_clk_index);
++		}
+ 	}
+ 	if (!sp && (gdscr & (1u << 31))) {
+ 		uint32_t rbbm = rd(w.core + 0x840);
+@@ -1790,6 +1834,10 @@ sweet_a630_init(void)
+ 	PE_parse_boot_argn("sweetgpuarena", &arena_size, sizeof(arena_size));
+ 	PE_parse_boot_argn("sweetgpuwait", &wait_mode, sizeof(wait_mode));
+ 	PE_parse_boot_argn("sweetgpufreq", &gpu_freq_index, sizeof(gpu_freq_index));
++	PE_parse_boot_argn("sweetgpuclk", &gpu_clk_index, sizeof(gpu_clk_index));
++	if (gpu_clk_index >= NGPU_LEVELS) {
++		gpu_clk_index = 0;
++	}
+ 	printf("SWEET GPU: Adreno 630 bring-up (sweetgpu=%u), GMU memory at 0x%llx\n", on, pool_pa);
+ 	thread_t thread;
+ 	if (kernel_thread_start(a630_thread, NULL, &thread) == KERN_SUCCESS) {
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index dd24528..d4d0055 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -18,7 +18,6 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ int sweet_rpmh_bcm_vote_top(const char *res);
+ int sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max);
+-void sweet_rpmh_dump_slave(unsigned want);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+ #define RH_RSC_PA_SM7150   0x18220000u
+@@ -468,41 +467,4 @@ sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max)
+ 	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
+ 	return (int)n;
+ }
+-/* Diagnostics (0106): every cmd-db entry of one slave type (3 = ARC) with its address. */
+-void
+-sweet_rpmh_dump_slave(unsigned want)
+-{
+-	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
+-		return;
+-	}
+-	if (!rh_map()) {
+-		for (unsigned i = 0; i < 8; ++i) {
+-			uint32_t h = 8u + 16u * i;
+-			unsigned slave = rh_db16(h);
+-			if (!slave) {
+-				break;
+-			}
+-			if (slave != want) {
+-				continue;
+-			}
+-			uint32_t entries = RH_DB_HEADER + rh_db16(h + 2);
+-			unsigned count = rh_db16(h + 6);
+-			if (!rh_range(entries, count * RH_DB_ENTRY)) {
+-				break;
+-			}
+-			for (unsigned j = 0; j < count; ++j) {
+-				uint32_t e = entries + RH_DB_ENTRY * j;
+-				uint32_t k0 = rh_read(rh_db, e), k1 = rh_read(rh_db, e + 4);
+-				char name[9];
+-				for (unsigned c = 0; c < 8; c++) {
+-					uint8_t ch = (uint8_t)((c < 4 ? k0 : k1) >> (8 * (c % 4)));
+-					name[c] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : (ch ? '?' : 0);
+-				}
+-				name[8] = 0;
+-				printf("SWEET RPMH: cmd-db slave %u: %-8s addr %#x\n", slave, name, rh_read(rh_db, e + 16));
+-			}
+-		}
+-	}
+-	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
+-}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

@@ -400,3 +400,14 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   - **gpucc PLL0 @0x0: 01000005 00000000 00000000 00000007 00004804 20485699 00002067 40000000: L_VAL 0, no lock
     bit: the GPU core PLL is off**; PLL1 @0x100: mode 0, L 0 (off too). gfx3d RCG 0x101c/0x1020 = 0x2/0x0 = XO.
   - Conclusion: the GMU acks DCVS but never brings up PLL0; the RSC-ack suspicion is cleared.
+- **Route 2 chosen (user, 2026-10-31): we run the GPU clock ourselves.** Facts from downstream
+  gpucc-sdm845.c (LineageOS android_kernel_oneplus_sdm845 lineage-22.2, ref/downstream/): gpu_cc_pll0 = Fabia
+  at gpucc +0x0 (VCO 249.6 MHz..2 GHz, MX LOW up to 1066 MHz); gx_gfx3d_clk_src RCG at +0x101c/+0x1020, mnd 0
+  (so 0x1024.. do not exist: the 0106 trap), parent map 2 with input 1 = crc_div = pll0_out_even / 1; the sdm845
+  v2 table 180/257/342/414/520/596/675/710 MHz all at crc_div /1, so PLL0 runs at the GPU frequency.
+- **Kernel patch 0107 (written 2026-10-31): `sweetgpuclk=N`** (1..7 = 257..710 MHz, absent = off, as before).
+  The GMU boot vote (GMU_GX_VOTE/MX_VOTE) takes level N's perf-table indices (N=1: 3/3, the old fixed value;
+  N=7: gfx 9 / mx 4). After the DCVS vote: mainline's alpha_pll_fabia_enable order (OUTCTRL off, OPMODE
+  STANDBY, L + 16-bit FRAC, RESET_N, OPMODE RUN, wait LOCK_DET <= 1 ms, USER_CTL outputs + even /1,
+  OUTCTRL on), then gfx3d CFG = 0x101 + CMD UPDATE. No lock = RCG stays on XO. Removes 0106's dumps.
+  Log: `clk before: ...`, `clk: PLL0 locked at N MHz ...`; the 5-second `gpu N MHz` shows the result.
