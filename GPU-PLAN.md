@@ -477,3 +477,12 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   **0114:** 50 ms between readout lines, printed at ~20 s and ~60 s.
 - **Root v5 on the phone (2026-10-31): all apps are there** (user: "everything is there"; logo ~3 s, no long
   reseed visible). SweetMetal2 from the offline bundle works (GPU-composited as before).
+- **0114 on the phone (2026-10-31): the MDP as ABL left it.** VIG0 (QSEED3 scaler pipe) scans 0x9d400000,
+  src/out 1080x2340, YSTRIDE0 0x10e0 (4320), FORMAT 0x237ff, UNPACK 0x03020001; VIG1-3 and DMA0-3 unused; CTL0
+  LAYER(LM0) 0x01000005, TOP 0x20020 (CTL1-4 empty); PINGPONG0 AUTOREFRESH 0x80000001. Plan (user agreed):
+  GPU 2D blit + scale into our own aligned scan-out buffers, MDP flips VIG0 between them.
+- **Kernel patch 0115 (2026-10-31):** read-only SMMU report for the display (all valid SMRs/S2CRs, MDSS streams
+  0x880/0xc80 flagged, CBs) after the MDP readout; **opt-in flip test `sweetfb_flip=1`**: two buffers inside
+  ABL's 36 MiB cont_splash (0x9d400000 + 12 / 24 MiB, stride 4352, WC), the CPU copy goes there, then VIG0
+  SRC0_ADDR/YSTRIDE0 + CTL0 FLUSH bit 0, wait for the bit to clear (50 ms, then CTL_START, 50 ms); not latched
+  = back to the splash buffer, test off. Logs `SWEET FLIP: ...` for the first 6 flips.

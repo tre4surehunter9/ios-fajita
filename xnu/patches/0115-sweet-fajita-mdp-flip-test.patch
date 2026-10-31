@@ -1,0 +1,245 @@
+diff --git a/bsd/dev/sweet_usb.c b/bsd/dev/sweet_usb.c
+index 214130c..e3610ee 100644
+--- a/bsd/dev/sweet_usb.c
++++ b/bsd/dev/sweet_usb.c
+@@ -161,6 +161,53 @@ usb_smmu_report(void)
+ 	    hits ? "" : " (unmatched: sCR0.USFCFG decides bypass/fault)");
+ }
+ 
++/*
++ * 0115, read-only, for the display (SweetFramebuffer, ~20 s after start): every valid SMR of the apps SMMU
++ * with its S2CR, flagging the MDSS streams (sdm845.dtsi mdss iommus <&apps_smmu 0x880 0x8>, and 0xc80),
++ * and the context bank of each translating entry. One line every 50 ms (bursts are dropped on the USB
++ * console).
++ */
++void sweet_smmu_report_display(void);
++
++void
++sweet_smmu_report_display(void)
++{
++	vm_offset_t smmu = ml_io_map(SMMU_PA, SMMU_SIZE);
++	if (smmu == 0) {
++		return;
++	}
++	uint32_t scr0 = usb_rd(smmu, 0x0), idr0 = usb_rd(smmu, 0x20), idr1 = usb_rd(smmu, 0x24);
++	unsigned nsmr = idr0 & 0xffu, ncb = idr1 & 0xffu;
++	uint32_t page = (idr1 & (1u << 31)) ? 0x10000u : 0x1000u;
++	uint32_t npage = 1u << (((idr1 >> 28) & 7u) + 1u);
++	printf("SWEET SMMU: sCR0 %#x (CLIENTPD %u USFCFG %u) smr=%u cb=%u\n", scr0, scr0 & 1u, (scr0 >> 10) & 1u,
++	    nsmr, ncb);
++	delay(50000);
++	if (nsmr > 128 || ncb > 128 || (uint64_t)page * npage * 2 > SMMU_SIZE) {
++		return;
++	}
++	for (unsigned i = 0; i < nsmr; i++) {
++		uint32_t smr = usb_rd(smmu, 0x800 + 4 * i);
++		if (!(smr & (1u << 31))) {
++			continue;
++		}
++		uint32_t id = smr & 0x7fffu, mask = (smr >> 16) & 0x7fffu;
++		uint32_t s2cr = usb_rd(smmu, 0xc00 + 4 * i);
++		unsigned type = (s2cr >> 16) & 3u, cb = s2cr & 0xffu;
++		bool mdss = !((0x880u ^ id) & ~mask & 0x7fffu) || !((0xc80u ^ id) & ~mask & 0x7fffu);
++		printf("SWEET SMMU: SMR%u id %#x mask %#x -> S2CR %#x %s cb %u%s\n", i, id, mask, s2cr,
++		    type == 0 ? "translate" : type == 1 ? "bypass" : "fault", cb, mdss ? "  <- MDSS (display)" : "");
++		delay(50000);
++		if (type == 0 && cb < ncb) {
++			vm_offset_t c = smmu + (vm_offset_t)npage * page + (vm_offset_t)cb * page;
++			printf("SWEET SMMU:   CB%u CBAR %#x SCTLR %#x TTBR0 %#x%08x TCR %#x FSR %#x FAR %#x%08x\n",
++			    cb, usb_rd(smmu, page + 4 * cb), usb_rd(c, 0x0), usb_rd(c, 0x24), usb_rd(c, 0x20),
++			    usb_rd(c, 0x30), usb_rd(c, 0x58), usb_rd(c, 0x64), usb_rd(c, 0x60));
++			delay(50000);
++		}
++	}
++}
++
+ /*
+  * Route stream 0x740 like Linux arm-smmu-qcom's bypass quirk (SDM845's
+  * hypervisor turns an S2CR "bypass" into "fault"): the last context bank as
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index c99724a..526273a 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -55,6 +55,8 @@ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
+ extern "C" int sweet_gpu_wait_all_ns(uint64_t timeout_ns);
+ extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
+ extern "C" bool sweet_board_is(const char *want);
++extern "C" void sweet_smmu_report_display(void);
++extern "C" vm_offset_t ml_io_map_unmappable(vm_offset_t phys_addr, vm_size_t size, unsigned int flags);
+ 
+ /*
+  * 0112, read-only: which MDP pipe ABL left scanning the splash buffer, with
+@@ -68,13 +70,21 @@ extern "C" bool sweet_board_is(const char *want);
+  * 0x34), dpu_hw_ctl.c (LAYER(lm) 4 lm / LM_5 0x24, TOP 0x14, FLUSH 0x18),
+  * dpu_hw_pingpong.c (TEAR_CHECK_EN 0x0, AUTOREFRESH_CONFIG 0x30).
+  */
++static vm_offset_t sweet_mdp;
++
++static vm_offset_t
++sweet_mdp_map(void)
++{
++	if (sweet_mdp == 0 && sweet_board_is("oneplus,fajita")) {
++		sweet_mdp = ml_io_map(0x0ae01000, 0x8f000);
++	}
++	return sweet_mdp;
++}
++
+ static void
+ sweet_mdp_dump(void)
+ {
+-	if (!sweet_board_is("oneplus,fajita")) {
+-		return;
+-	}
+-	vm_offset_t mdp = ml_io_map(0x0ae01000, 0x8f000);
++	vm_offset_t mdp = sweet_mdp_map();
+ 	if (mdp == 0) {
+ 		return;
+ 	}
+@@ -103,6 +113,79 @@ sweet_mdp_dump(void)
+ 		IOSleep(50);		/* bursts are dropped on the USB console */
+ 	}
+ #undef MDP_RD
++	sweet_smmu_report_display();
++}
++
++/*
++ * 0115 flip test (sweetfb_flip=1, fajita): scan-out buffers of our own with a 64-byte aligned stride, the
++ * first step of the GPU present path (the A6xx 2D engine writes only 64-byte pitches; the panel's is 4320).
++ * ABL's cont_splash reservation at 0x9d400000 is 36 MiB and a frame takes 10 MB, so two buffers sit in it at
++ * +12 MiB and +24 MiB: memory the display already reads, below 4 GB (SSPP_SRC0_ADDR is 32 bits). Each GPU
++ * frame is copied (CPU, for now) into the back buffer, then VIG0 (the pipe ABL scans with: 0114) gets its
++ * address and stride and CTL0 is flushed (VIG0 = flush bit 0; dpu_hw_ctl.c); with PINGPONG0 auto-refresh the
++ * flush latches at the next frame and the bit clears. If it does not clear in 50 ms, CTL_START is tried; if
++ * that fails too, VIG0 goes back to the splash buffer and the test is off for this boot.
++ */
++#define FLIP_STRIDE		4352u			/* 1088 px */
++#define FLIP_OFFSET		0x00c00000ull		/* 12 MiB */
++#define MDP_VIG0		0x4000u
++#define MDP_CTL0		0x1000u
++
++static bool sweet_flip_on;
++static uintptr_t sweet_flip_va[2];
++static uint64_t sweet_flip_pa[2];
++static unsigned sweet_flip_next, sweet_flip_logged;
++
++static void
++sweet_flip_init(uint64_t splash, uint32_t height)
++{
++	uint32_t on = 0;
++	vm_offset_t mdp;
++	if (!PE_parse_boot_argn("sweetfb_flip", &on, sizeof(on)) || !on || (mdp = sweet_mdp_map()) == 0) {
++		return;
++	}
++	uint32_t addr = *(volatile uint32_t *)(mdp + MDP_VIG0 + 0x14);
++	if (addr != (uint32_t)splash) {
++		printf("SWEET FLIP: VIG0 scans 0x%x, not the splash buffer 0x%llx; flip test off\n", addr, splash);
++		return;
++	}
++	vm_size_t size = round_page((vm_size_t)FLIP_STRIDE * height);
++	for (unsigned i = 0; i < 2; i++) {
++		sweet_flip_pa[i] = splash + FLIP_OFFSET * (i + 1);
++		sweet_flip_va[i] = ml_io_map_unmappable((vm_offset_t)sweet_flip_pa[i], size, 0x6 /* WCOMB */);
++		if (sweet_flip_va[i] == 0) {
++			printf("SWEET FLIP: mapping 0x%llx failed; flip test off\n", sweet_flip_pa[i]);
++			return;
++		}
++		bzero((void *)sweet_flip_va[i], size);
++	}
++	sweet_flip_on = true;
++	printf("SWEET FLIP: on, buffers 0x%llx 0x%llx, stride %u\n", sweet_flip_pa[0], sweet_flip_pa[1], FLIP_STRIDE);
++}
++
++/* VIG0 to (pa, stride); 0 latched on the flush, 1 latched after CTL_START, -1 not latched. */
++static int
++sweet_flip_to(uint64_t pa, uint32_t stride, uint32_t *waited_ms)
++{
++	vm_offset_t mdp = sweet_mdp;
++	__asm__ volatile ("dsb sy" ::: "memory");
++	*(volatile uint32_t *)(mdp + MDP_VIG0 + 0x14) = (uint32_t)pa;
++	*(volatile uint32_t *)(mdp + MDP_VIG0 + 0x24) = stride;
++	*(volatile uint32_t *)(mdp + MDP_CTL0 + 0x18) = 1u;
++	uint32_t ms = 0;
++	for (; ms < 50 && (*(volatile uint32_t *)(mdp + MDP_CTL0 + 0x18) & 1u); ms++) {
++		IOSleep(1);
++	}
++	if (!(*(volatile uint32_t *)(mdp + MDP_CTL0 + 0x18) & 1u)) {
++		*waited_ms = ms;
++		return 0;
++	}
++	*(volatile uint32_t *)(mdp + MDP_CTL0 + 0x1c) = 1u;		/* CTL_START */
++	for (; ms < 100 && (*(volatile uint32_t *)(mdp + MDP_CTL0 + 0x18) & 1u); ms++) {
++		IOSleep(1);
++	}
++	*waited_ms = ms;
++	return (*(volatile uint32_t *)(mdp + MDP_CTL0 + 0x18) & 1u) ? -1 : 1;
+ }
+ 
+ /* Read by bsd/dev/sweet_a630.c's 5-second stats line (Phase 4): presents and their CPU copy time. */
+@@ -183,6 +266,8 @@ public:
+ 	uint32_t      fLogicalW, fLogicalH;     /* size reported to userland */
+ 	int32_t       fOffX, fOffY;             /* logical origin of the panel */
+ 	uintptr_t     fPixels;          /* kernel mapping of the panel memory */
++	uintptr_t     fDst;             /* where present() copies to (fPixels, or a flip buffer) */
++	uint32_t      fDstRowBytes;
+ 	IOMemoryMap  *fMap;
+ 	SweetSurface *fSurface;         /* the panel memory as an IOSurface */
+ 	IOLock       *fLock;            /* swaps and client list */
+@@ -258,6 +343,8 @@ AppleCLCD::start(IOService *provider)
+ 	fClients = OSArray::withCapacity(4);
+ 	fSurface = sweet_surface_create_physical(fPhys, fWidth, fHeight, fRowBytes, SWEET_FB_FORMAT_BGRA);
+ 	fPixels = fSurface != NULL ? fSurface->kernelAddress() : 0;
++	fDst = fPixels;
++	fDstRowBytes = fRowBytes;
+ 	fWorkLoop = IOWorkLoop::workLoop();
+ 	if (fLock == NULL || fClients == NULL || fPixels == 0 || fWorkLoop == NULL) {
+ 		IOLog("SWEET FB: setup failed\n");
+@@ -281,6 +368,7 @@ AppleCLCD::start(IOService *provider)
+ 	registerService();
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
++	sweet_flip_init(fPhys, fHeight);
+ 	return true;
+ }
+ 
+@@ -412,7 +500,31 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	if (sweet_fb_sync()) {
+ 		lck_mtx_lock(&sweet_fb_present_mtx);
+ 		sweet_gpu_wait_all_ns(100000000ULL);
+-		present(rec);
++		if (sweet_flip_on) {
++			unsigned b = sweet_flip_next;
++			fDst = sweet_flip_va[b];
++			fDstRowBytes = FLIP_STRIDE;
++			present(rec);
++			fDst = fPixels;
++			fDstRowBytes = fRowBytes;
++			uint32_t ms = 0;
++			int r = sweet_flip_to(sweet_flip_pa[b], FLIP_STRIDE, &ms);
++			if (sweet_flip_logged < 6 || r < 0) {
++				sweet_flip_logged++;
++				printf("SWEET FLIP: buffer %u (0x%llx): %s after %u ms\n", b, sweet_flip_pa[b],
++				    r == 0 ? "latched on the flush" : r == 1 ? "latched after CTL_START" : "NOT LATCHED", ms);
++			}
++			if (r < 0) {
++				sweet_flip_on = false;
++				sweet_flip_to(fPhys, fRowBytes, &ms);
++				printf("SWEET FLIP: back to the splash buffer; flip test off\n");
++				present(rec);
++			} else {
++				sweet_flip_next = b ^ 1u;
++			}
++		} else {
++			present(rec);
++		}
+ 		lck_mtx_unlock(&sweet_fb_present_mtx);
+ 	}
+ 	if ((++sweet_fb_swap_count % 1000) == 0) {
+@@ -509,7 +621,7 @@ AppleCLCD::present(const uint8_t *rec)
+ 				    (unsigned)((uint64_t)h * s->bytesPerRow), FALSE);
+ 			}
+ 			for (int32_t y = 0; y < h; y++) {
+-				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
++				memcpy((void *)(fDst + (uint64_t)(dy + y) * fDstRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+ 				    (size_t)w * 4);
+ 			}
