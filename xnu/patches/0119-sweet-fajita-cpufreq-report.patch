@@ -1,0 +1,189 @@
+diff --git a/bsd/conf/files b/bsd/conf/files
+index e01d4bf..4646789 100644
+--- a/bsd/conf/files
++++ b/bsd/conf/files
+@@ -112,6 +112,7 @@ bsd/dev/sweet_rpmh.c			standard
+ bsd/dev/sweet_spmi.c			standard
+ bsd/dev/sweet_usb.c			standard
+ bsd/dev/sweet_a630.c			standard
++bsd/dev/sweet_cpufreq.c			standard
+ bsd/dev/mem.c				standard
+ bsd/dev/munge.c 			optional config_requires_u32_munging
+ bsd/dev/unix_startup.c			standard
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+new file mode 100644
+index 0000000..1c0b09b
+--- /dev/null
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -0,0 +1,151 @@
++/*
++ * SWEET (fajita): CPU clock report, read-only (0119).
++ *
++ * Nothing in this kernel drives the SDM845 CPU DVFS, so the cores run at
++ * whatever ABL left in the OSM firmware. This reports, ~25 s after boot
++ * (when the USB console is up) and once more at ~60 s:
++ *
++ * - each frequency domain's table and current level, as mainline's
++ *   drivers/cpufreq/qcom-cpufreq-hw.c (qcom_soc_data) reads them:
++ *   sdm845.dtsi cpufreq_hw reg 0x17d43000 (domain 0, cpus 0-3) and
++ *   0x17d45800 (domain 1, cpus 4-7); LUT rows 32 bytes apart from 0x110
++ *   (L_VAL bits 0-7, CORE_COUNT 16-18, SRC 30-31), voltages from 0x114,
++ *   current level 0x920; rate = 19.2 MHz x L_VAL if SRC, else GPLL0 / 2
++ *   (300 MHz); two equal rows end the table;
++ * - each CPU's measured clock: bound to the CPU, it times a chain of
++ *   dependent adds (one per cycle on the A55 and A75 cores) against
++ *   mach_absolute_time. No PMU: the hypervisor may trap it.
++ */
++#include <sys/param.h>
++#include <sys/systm.h>
++#include <kern/clock.h>
++#include <kern/thread.h>
++#include <kern/processor.h>
++#include <kern/sched_prim.h>
++#include <mach/mach_time.h>
++#include <machine/machine_routines.h>
++#include <pexpert/pexpert.h>
++
++#if defined(ARM64_BOARD_CONFIG_SWEET)
++
++void sweet_cpufreq_init(void);
++extern bool sweet_board_is(const char *want);
++extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern processor_t cpu_to_processor(int cpu);
++extern processor_t thread_bind(processor_t processor);	/* kern/sched_prim.h, MACH_KERNEL_PRIVATE there */
++#ifndef PROCESSOR_NULL
++#define PROCESSOR_NULL ((processor_t)0)
++#endif
++
++#define CF_DOMAINS	2
++#define CF_LUT		0x110
++#define CF_VOLT		0x114
++#define CF_ROW		32
++#define CF_PERF_STATE	0x920
++#define CF_ROWS		40
++
++static const uint64_t cf_pa[CF_DOMAINS] = { 0x17d43000, 0x17d45800 };
++
++static uint32_t
++cf_rd(vm_offset_t base, uint32_t off)
++{
++	return *(volatile uint32_t *)(base + off);
++}
++
++static void
++cf_tables(void)
++{
++	for (unsigned d = 0; d < CF_DOMAINS; d++) {
++		vm_offset_t b = ml_io_map((vm_offset_t)cf_pa[d], 0x1400);
++		if (b == 0) {
++			continue;
++		}
++		char line[256];
++		int len = snprintf(line, sizeof(line), "SWEET CPUFREQ: domain %u (cpus %u-%u) enable 0x%x level %u, table MHz:",
++		    d, 4 * d, 4 * d + 3, cf_rd(b, 0x0), cf_rd(b, CF_PERF_STATE));
++		uint32_t prev = 0;
++		for (unsigned i = 0; i < CF_ROWS && len < (int)sizeof(line) - 16; i++) {
++			uint32_t v = cf_rd(b, CF_LUT + CF_ROW * i);
++			uint32_t mhz = (v >> 30) ? (192 * (v & 0xff)) / 10 : 300;
++			if (i > 0 && mhz == prev) {
++				break;
++			}
++			len += snprintf(line + len, sizeof(line) - (size_t)len, " %u:%u%s", i, mhz,
++			    ((v >> 16) & 7) == 1 ? "t" : "");
++			prev = mhz;
++		}
++		printf("%s\n", line);
++		delay(50000);
++	}
++}
++
++/* Cycles of a dependent add chain: 8 adds per iteration, the loop counter runs beside it. */
++static uint64_t
++cf_spin(uint64_t iters)
++{
++	uint64_t x = 0;
++	__asm__ volatile (
++		"1:\n"
++		"add %0, %0, #1\n" "add %0, %0, #1\n" "add %0, %0, #1\n" "add %0, %0, #1\n"
++		"add %0, %0, #1\n" "add %0, %0, #1\n" "add %0, %0, #1\n" "add %0, %0, #1\n"
++		"subs %1, %1, #1\n"
++		"b.ne 1b\n"
++		: "+r" (x), "+r" (iters) : : "cc");
++	return x;
++}
++
++static void
++cf_measure(void)
++{
++	thread_t self = current_thread();
++	for (int cpu = 0; cpu < 8; cpu++) {
++		processor_t p = cpu_to_processor(cpu);
++		if (p == PROCESSOR_NULL) {
++			continue;
++		}
++		thread_bind(p);
++		thread_block(THREAD_CONTINUE_NULL);
++		uint64_t best = 0;
++		for (int run = 0; run < 3; run++) {
++			uint64_t t0 = mach_absolute_time();
++			uint64_t adds = cf_spin(2000000);		/* 16 M adds */
++			uint64_t ns;
++			absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
++			uint64_t mhz = ns ? adds * 1000 / ns : 0;
++			best = mhz > best ? mhz : best;
++		}
++		printf("SWEET CPUFREQ: cpu %d (on %d): ~%llu MHz measured\n", cpu, cpu_number(), best);
++		delay(50000);
++	}
++	thread_bind(PROCESSOR_NULL);
++	thread_block(THREAD_CONTINUE_NULL);
++	(void)self;
++}
++
++static void
++cf_thread(void *arg __unused, wait_result_t wr __unused)
++{
++	delay(25 * 1000000);
++	cf_tables();
++	cf_measure();
++	delay(35 * 1000000);
++	cf_tables();
++	cf_measure();
++	thread_terminate(current_thread());
++}
++
++void
++sweet_cpufreq_init(void)
++{
++	uint32_t on = 1;
++	PE_parse_boot_argn("sweetcpufreq", &on, sizeof(on));
++	if (!on || !sweet_board_is("oneplus,fajita")) {
++		return;
++	}
++	thread_t t;
++	if (kernel_thread_start(cf_thread, NULL, &t) == KERN_SUCCESS) {
++		thread_deallocate(t);
++	}
++}
++
++#endif /* ARM64_BOARD_CONFIG_SWEET */
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index 6f1b93c..ccdeed3 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -52,6 +52,7 @@ static void sweet_log_start(void);
+ extern void sweet_sample_start(void);
+ extern void sweet_keys_init(void);
+ extern void sweet_a630_init(void);
++extern void sweet_cpufreq_init(void);
+ extern void sweet_touch_init(void);
+ extern void sweet_usb_probe(void);
+ 
+@@ -662,6 +663,7 @@ sweet_ufs_init(void)
+ 	sweet_touch_init();
+ 	sweet_usb_probe();
+ 	sweet_a630_init();        /* fajita Adreno 630 (sweetgpu=1): bsd/dev/sweet_a630.c */
++	sweet_cpufreq_init();     /* fajita CPU clock report: bsd/dev/sweet_cpufreq.c */
+ 	return 0;
+ }
+ 

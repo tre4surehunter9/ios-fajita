@@ -519,3 +519,12 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   every fence CACHE_FLUSH_TS carries the IRQ bit; the handler clears RBBM_INT_0 before the EOI and wakes
   waiters; waits sleep on the event with a 200 us timeout (so no IRQ = the old polling). Stats show `irqs N`
   per 5 s and no longer clear RBBM_INT_0 when the IRQ is on. Boot-arg `sweetgpuirq=0`.
+- **0118 on the phone (2026-10-31, fastboot boot worked again after a cold start): interrupts work.**
+  `interrupt INTID 332: group bit 0, enabled`; `irqs` = submits in every 5 s line; GPU blit 1-3 ms (up to 13 ms
+  when queued behind client work), flips latch. User: "sorta smoother but still not like smooth at all": 10-13.6
+  presents/s with the GPU busy 1-19 %, so the limit is CPU-side.
+- **Kernel patch 0119 (2026-10-31): CPU clock report, read-only** (new bsd/dev/sweet_cpufreq.c, started after
+  sweet_a630_init): at ~25 s and ~60 s, each OSM frequency domain's table and current level (mainline
+  qcom-cpufreq-hw.c qcom_soc_data: 0x17d43000 / 0x17d45800, LUT 0x110 + 32 i, PERF_STATE 0x920) and each CPU's
+  measured clock (bound to it, a dependent add chain timed against mach_absolute_time; no PMU, the hypervisor may
+  trap it). Boot-arg sweetcpufreq=0.
