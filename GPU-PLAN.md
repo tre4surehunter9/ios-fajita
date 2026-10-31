@@ -457,3 +457,11 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **0112 on the phone (2026-10-31):** booted fine (710 MHz), but no `SWEET MDP` (nor the AppleCLCD start) line
   reached the USB log: the early-boot burst drops lines. **0113:** the inventory runs once ~20 s after start
   from the vsync timer, via printf.
+- **More apps (user, 2026-10-31): root image v5.** The 32 removable Apple apps of 20H392 sit in
+  /private/var/staged_system_apps (first-boot data migration installs them on a real device; sweet-root-tweaks
+  skips that migration). `tools/sweet-root-apps.py` copies them to /Applications (root:admin like the other
+  system apps, modes kept; Apple-signed, in the IPSW static trust cache), removes LaunchServices'
+  com.apple.LaunchServices*.csstore so lsd seeds again, and with --metal2 writes SweetMetal2.bundle from
+  mtl2install's SWAR blob (+ /var/local/mtl2-clients, mtl2.log) since a full userdata flash drops the copy
+  mtl2install put on the phone. `work/update-root-v5.sh` (v4 -> v5, full .simg: userdata is no longer
+  identical to v4, so no sparsediff). Black wallpaper is a separate bug (PosterBoard SIGTRAP).
