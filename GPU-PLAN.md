@@ -325,3 +325,12 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   archive, writes it to /System/Library/Extensions/SweetMetal2.bundle, creates /var/local (mtl2-clients =
   SpringBoard; backboardd always) and SIGKILLs backboardd and SpringBoard so launchd restarts them with Metal.
   Last line "MTL2INSTALL DONE".
+- **PHASE 3 MILESTONE (2026-10-31, image 0101i): the home screen is composited by the A630 through Metal.**
+  mtl2install wrote SweetMetal2.bundle (SweetMetal2 21.6 MB, Turnip 17.3 MB, Info.plist, CodeResources) and
+  restarted backboardd and SpringBoard; both matched IOAcceleratorES -> SweetMetal, opened SweetGPU (windows
+  0x2_0000_0000 and 0x3_0000_0000) and got `device Turnip Adreno (TM) 630` (backboardd 1.7 s, SpringBoard 4.8 s;
+  pipeline caches in /var/local/m2v-cache/<process>). Photo: lock -> home screen with icons, labels, search pill,
+  dock, badge. **Very slow** (user). Open: black wallpaper (PosterBoard crashes with sig 5, also on CPU-rendered
+  boots), widgets "Waiting..." (chronod not in mtl2-clients), unanswered device queries (gpuCoreCount,
+  maxComputeThreadgroupMemory, ...). The fastboot transfer needs the USB-A cable (USB-C to C stalls).
+  Next: Phase 4, measure first (frame times, where backboardd's time goes), then the GPU present path.
