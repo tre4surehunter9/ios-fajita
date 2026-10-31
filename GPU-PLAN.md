@@ -433,3 +433,9 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **Kernel patch 0109 (written 2026-10-31): copy at swap time.** With sweetmtl=2 (boot-arg `sweetfb_sync=0`
   restores the timer path), AppleCLCD::swap waits for every GPU fence submitted so far
   (`sweet_gpu_wait_all_ns`, 100 ms cap), then copies before returning, under one mutex.
+- **0109 at 710 (2026-10-31):** APPS rail votes gfx.lvl 9 / mx.lvl 4 completed (cmd-status 0x10101), but PLL0
+  did not lock at 1420 MHz (mode 0x01000004): gfx3d stayed on XO. Downstream clk-alpha-pll.c (Fabia): an L/FRAC
+  write only takes after a latch (UPDATE_LOGIC_BYPASS bit 23; UPDATE bit 22, ACK_LATCH bit 29, then 100 us).
+- **Kernel patch 0110 (written 2026-10-31):** `pll0_start()` with the latch; if no lock, again via a reset
+  cycle (RESET_N 0 -> 1, recalibrates); lock wait 1.5 ms; then steps down 675/596/520/414/342/257 until one
+  locks. Each try logs `clk: PLL0 N MHz latched|after reset: latch acked, LOCKED|not locked (...)`.

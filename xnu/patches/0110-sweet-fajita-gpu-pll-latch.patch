@@ -1,0 +1,113 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 24dcb51..09fd13e 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -1678,6 +1678,57 @@ gpu_set_freq(void)
+ #define RCG_UPDATE		(1u << 0)
+ #define RCG_ROOT_OFF		(1u << 31)
+ 
++#define PLL_UPDATE		(1u << 22)
++#define PLL_UPDATE_BYPASS	(1u << 23)	/* downstream PLL_HW_UPDATE_LOGIC_BYPASS */
++#define PLL_ACK_LATCH		(1u << 29)
++
++/*
++ * 0110: downstream clk-alpha-pll.c (Fabia): an L/FRAC write only takes after
++ * a latch (clk_fabia_pll_configure sets UPDATE_LOGIC_BYPASS; set_rate writes
++ * L/FRAC, sets UPDATE, checks ACK_LATCH, clears UPDATE, waits 100 us), then
++ * enable: STANDBY, RESET_N, RUN, LOCK_DET (mainline waits up to 1500 us).
++ * 0109 wrote L without the latch and never locked. reset = true first puts
++ * PLL0 into reset (RESET_N 0), so it calibrates again coming out of it.
++ */
++static bool
++pll0_start(vm_offset_t cc, uint32_t l, uint32_t frac, bool reset)
++{
++	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) & ~PLL_OUTCTRL);
++	wr(cc + PLL0_OPMODE, 0);				/* STANDBY */
++	if (reset) {
++		wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) & ~PLL_RESET_N);
++		delay(10);
++	}
++	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_UPDATE_BYPASS);
++	wr(cc + PLL0_L_VAL, l);
++	wr(cc + PLL0_FRAC, frac);
++	bool latched = true;
++	if (!reset) {
++		wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_UPDATE);
++		unsigned t = 0;
++		while (!(rd(cc + PLL0_MODE) & PLL_ACK_LATCH) && t < 100) {
++			delay(1);
++			t++;
++		}
++		latched = (rd(cc + PLL0_MODE) & PLL_ACK_LATCH) != 0;
++		wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) & ~PLL_UPDATE);
++		delay(100);
++	}
++	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_RESET_N);
++	wr(cc + PLL0_OPMODE, 1);				/* RUN */
++	unsigned us = 0;
++	while (!(rd(cc + PLL0_MODE) & PLL_LOCK_DET) && us < 1500) {
++		delay(10);
++		us += 10;
++	}
++	uint32_t mode = rd(cc + PLL0_MODE);
++	printf("SWEET GPU: clk: PLL0 %u MHz %s: latch %s, %s (mode 0x%08x L 0x%x status 0x%x, %u us)\n",
++	    (uint32_t)(((uint64_t)l * 19200000 + (((uint64_t)frac * 19200000) >> 16)) / 1000000),
++	    reset ? "after reset" : "latched", reset ? "n/a" : latched ? "acked" : "NOT ACKED",
++	    (mode & PLL_LOCK_DET) ? "LOCKED" : "not locked", mode, rd(cc + PLL0_L_VAL), rd(cc + PLL0_STATUS), us);
++	return (mode & PLL_LOCK_DET) != 0;
++}
++
+ static void
+ gpu_clk_set(uint32_t level)
+ {
+@@ -1703,33 +1754,34 @@ gpu_clk_set(uint32_t level)
+ 			delay(10);
+ 		}
+ 	}
+-	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) & ~PLL_OUTCTRL);
+-	wr(cc + PLL0_OPMODE, 0);				/* STANDBY */
+-	wr(cc + PLL0_L_VAL, l);
+-	wr(cc + PLL0_FRAC, frac);
+-	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_RESET_N);
+-	wr(cc + PLL0_OPMODE, 1);				/* RUN */
+-	unsigned us = 0;
+-	while (!(rd(cc + PLL0_MODE) & PLL_LOCK_DET) && us < 1000) {
+-		delay(10);
+-		us += 10;
++	/* Highest level that locks, from the asked one down to 257 MHz (the rails are voted for the asked one). */
++	bool locked = false;
++	for (uint32_t lv = level; lv >= 1 && !locked; lv--) {
++		hz = (uint64_t)gpu_khz[lv] * 2000;
++		l = (uint32_t)(hz / 19200000);
++		frac = (uint32_t)(((hz % 19200000) << 16) / 19200000);
++		for (unsigned attempt = 0; attempt < 2 && !locked; attempt++) {
++			locked = pll0_start(cc, l, frac, attempt == 1);
++		}
++		if (locked) {
++			level = lv;
++		}
+ 	}
+-	uint32_t mode = rd(cc + PLL0_MODE);
+-	if (!(mode & PLL_LOCK_DET)) {
+-		printf("SWEET GPU: clk: PLL0 NOT LOCKED at %u MHz (mode 0x%08x status 0x%x); gfx3d stays on XO\n",
+-		    gpu_khz[level] / 1000, mode, rd(cc + PLL0_STATUS));
++	if (!locked) {
++		printf("SWEET GPU: clk: PLL0 locked at no level; gfx3d stays on XO\n");
+ 		return;
+ 	}
+ 	wr(cc + PLL0_USER_CTL, (rd(cc + PLL0_USER_CTL) & ~PLL_EVEN_DIV_MASK) | PLL_OUT_MASK);
+ 	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) | PLL_OUTCTRL);
+ 	wr(cc + GFX3D_CFG_RCGR, (1u << 8) | 1u);		/* input 1 (crc_div), divider 1 */
+ 	wr(cc + GFX3D_CMD_RCGR, rd(cc + GFX3D_CMD_RCGR) | RCG_UPDATE);
+-	us = 0;
++	unsigned us = 0;
++	uint32_t cmd;
+ 	while ((rd(cc + GFX3D_CMD_RCGR) & RCG_UPDATE) && us < 1000) {
+ 		delay(10);
+ 		us += 10;
+ 	}
+-	uint32_t cmd = rd(cc + GFX3D_CMD_RCGR);
++	cmd = rd(cc + GFX3D_CMD_RCGR);
+ 	printf("SWEET GPU: clk: PLL0 locked at %u MHz for %u MHz (L 0x%x frac 0x%x, mode 0x%08x), gfx3d rcg 0x%x/0x%x%s\n",
+ 	    (uint32_t)(hz / 1000000), gpu_khz[level] / 1000, l, frac, rd(cc + PLL0_MODE), cmd, rd(cc + GFX3D_CFG_RCGR),
+ 	    (cmd & RCG_UPDATE) ? " UPDATE STUCK" : (cmd & RCG_ROOT_OFF) ? " ROOT OFF" : "");
