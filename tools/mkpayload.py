@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack an xnu kernel Mach-O + ADT into the payload the sweet shim boots.
 
-  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--gpufw DIR]
+  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--gpufw DIR] [--run PROGRAM]
 
 The kernel is linked as a PIE with LC_DYLD_CHAINED_FIXUPS. Nobody else
 (no kmutil, no iBoot) resolves those for us, and xnu only rebases static
@@ -29,6 +29,10 @@ turn into md0 (boot with rd=md0).
 --gpufw adds the Adreno 630 firmware found in DIR (research/gpu/fw, never in
 git) as /chosen "gpufw,<file>" properties for bsd/dev/sweet_a630.c. After
 ios-flame's tools/mkpayload.py (MIT).
+
+--run adds PROGRAM (a signed iOS Mach-O, e.g. from the "phone" workflow) as
+/chosen "sweetrun" + "sweetrun-name": phone/sweetrun, installed once on the
+root, runs it at boot with its output on the console.
 """
 import argparse, os, struct, sys
 
@@ -155,6 +159,19 @@ def add_gpufw_to_adt(adt_blob, fw_dir):
     return adt.serialize(root), found
 
 
+def add_run_to_adt(adt_blob, prog_path):
+    """Return the ADT with /chosen sweetrun = the program, sweetrun-name = its file name."""
+    root, _ = adt.parse(adt_blob)
+    chosen = next(c for c in root.children if c.name == 'chosen')
+    chosen.props = [p for p in chosen.props if p[0] not in ('sweetrun', 'sweetrun-name')]
+    data = open(prog_path, 'rb').read()
+    if data[:4] != bytes.fromhex('cffaedfe'):
+        raise SystemExit(f'error: {prog_path} is not a 64-bit Mach-O')
+    chosen.props.append(('sweetrun', 0, data))
+    chosen.props.append(('sweetrun-name', 0, os.path.basename(prog_path).encode()))
+    return adt.serialize(root)
+
+
 def adt_dram(adt_blob):
     """Kernel-managed RAM <base, size> from the ADT's /chosen dram-base/dram-size."""
     root, _ = adt.parse(adt_blob)
@@ -163,7 +180,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None, run_path=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -180,6 +197,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None):
     gpufw = None
     if gpufw_dir:
         adt_blob, gpufw = add_gpufw_to_adt(adt_blob, gpufw_dir)
+    if run_path:
+        adt_blob = add_run_to_adt(adt_blob, run_path)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -214,7 +233,8 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None):
     for i, t in enumerate(seg_table):
         struct.pack_into('<4Q', out, SEG_TABLE + 32 * i, *t)
     info = dict(cputype=hex(m['cputype']), cpusub=m['cpusub'], fixups=nfix, virt_base=hex(virt_base),
-                entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, gpufw=gpufw, size=len(out),
+                entry=hex(m['entry']), kernel_end=hex(kernel_end), ramdisk=ramdisk, gpufw=gpufw,
+                run=os.path.basename(run_path) if run_path else None, size=len(out),
                 segs=[(s['name'], hex(s['vmaddr']), hex(s['vmsize'])) for s in segs])
     return bytes(out), info
 
@@ -225,8 +245,9 @@ if __name__ == '__main__':
     ap.add_argument('--cmdline', default='debug=0xc serial=3 cpus=1 keepsyms=1')
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     ap.add_argument('--gpufw', help='Adreno 630 firmware directory (/chosen/gpufw,*, bsd/dev/sweet_a630.c)')
+    ap.add_argument('--run', help='program for phone/sweetrun to run at boot (/chosen/sweetrun)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.gpufw)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.gpufw, a.run)
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':

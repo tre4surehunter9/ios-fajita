@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Apply the SWEET bring-up changes to an iOS root made by tools/mkiosroot.sh.
 
-  sudo sweet-root-tweaks.py MOUNTED_ROOT
+  sudo sweet-root-tweaks.py MOUNTED_ROOT [--sweetrun SWEETRUN_BINARY]
 
 MOUNTED_ROOT is the HFS+ image mounted read-write (Linux: run
 `fsck.hfsplus -fy` on the image, then `mount -t hfsplus -o loop,force`).
@@ -31,6 +31,10 @@ screen (image versions v8-v14 in NOTES.md):
   activation      mobileactivationd data ark seeded; the actual Activated state
                   comes from its Hactivation branch, selected by the /chosen
                   security-status properties in tools/mkadt.py
+  sweetrun        (--sweetrun only) /usr/local/bin/sweetrun + LaunchDaemon
+                  com.sweet.run (RunAtLoad, once): runs the test program a
+                  boot image carries (tools/mkpayload.py --run), output on
+                  the console; phone/sweetrun, built by the "phone" workflow
 """
 import glob, os, plistlib, shutil, sys
 
@@ -74,6 +78,31 @@ def launchd(root):
         del jobs[k]
     save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
     print(f'launchd.plist: {renamed} _PanicOnCrash renamed, {len(removed)} CommCenter jobs removed')
+
+
+def sweetrun(root, binary):
+    data = open(binary, 'rb').read()
+    if data[:4] != bytes.fromhex('cffaedfe'):
+        sys.exit(f'{binary} is not a 64-bit Mach-O')
+    dst = os.path.join(root, 'usr/local/bin/sweetrun')
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    shutil.copyfile(binary, dst)
+    os.chown(dst, 0, 0)
+    os.chmod(dst, 0o755)
+    path = os.path.join(root, 'System/Library/xpc/launchd.plist')
+    st = os.stat(path)
+    plist = load(path)
+    plist['LaunchDaemons']['/System/Library/LaunchDaemons/com.sweet.run.plist'] = {
+        'Label': 'com.sweet.run',
+        'Program': '/usr/local/bin/sweetrun',
+        'ProgramArguments': ['/usr/local/bin/sweetrun'],
+        'RunAtLoad': True,
+        'LaunchOnlyOnce': True,
+        'UserName': 'root',
+        'ProcessType': 'Interactive',
+    }
+    save(path, plist, st.st_uid, st.st_gid, st.st_mode & 0o7777)
+    print(f'sweetrun: /usr/local/bin/sweetrun ({len(data)} bytes) + LaunchDaemon com.sweet.run')
 
 
 def containers(root):
@@ -144,9 +173,16 @@ def interface_namer(root):
 
 
 def main():
-    if len(sys.argv) != 2 or not os.path.isdir(os.path.join(sys.argv[1], 'System/Library/xpc')):
+    args = sys.argv[1:]
+    run_binary = None
+    if len(args) == 3 and args[1] == '--sweetrun':
+        run_binary = args[2]
+        args = args[:1]
+    if len(args) != 1 or not os.path.isdir(os.path.join(args[0], 'System/Library/xpc')):
         sys.exit(__doc__)
-    root = sys.argv[1]
+    root = args[0]
+    if run_binary:
+        sweetrun(root, run_binary)
     launchd(root)
     containers(root)
     activation(root)

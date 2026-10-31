@@ -1,0 +1,45 @@
+name: phone
+
+# Programs that run on the phone (phone/): built with the iPhoneOS SDK,
+# ad-hoc signed. Artifact "phone-bin": sweetrun (installed once on the root,
+# tools/sweet-root-tweaks.py --sweetrun) and the test programs that ride in a
+# boot image (tools/mkpayload.py --run).
+on:
+  push:
+    branches: [fajita, main]
+    paths:
+      - "phone/**"
+      - ".github/workflows/phone.yml"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: GitHub runner image
+        default: macos-15
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: |
+          set -e
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK -O2 -Wall"
+          mkdir -p out
+          $CC -o out/sweetrun phone/sweetrun/sweetrun.c -framework IOKit -framework CoreFoundation
+          $CC -x c++ -std=c++17 -I phone/include -o out/gputest phone/gputest/gputest.cpp \
+              -framework IOKit -framework CoreFoundation -lc++
+          for f in out/*; do codesign -f -s - "$f"; done
+          file out/*
+          shasum -a 256 out/* | tee out/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: phone-bin
+          path: out/

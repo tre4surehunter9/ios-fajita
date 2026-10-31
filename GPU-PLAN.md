@@ -205,3 +205,12 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   GetDeviceInfo: chip 0x06030001, GMEM 1 MiB @0x100000, trap base 0x1fffffffff000; **UBWC left unconfigured
   (version 0): to settle before Turnip (2.3)**. Also the ios-flame pmap fix (`pmap_sync_page_attributes_phys`
   lost bit 32 of page addresses above 4 GiB).
+- **Test programs without root rebuilds (2026-10-31, user chose the launcher):** `phone/sweetrun` is installed
+  once on the root (`tools/sweet-root-tweaks.py --sweetrun`, LaunchDaemon `com.sweet.run`, RunAtLoad, once;
+  `work/update-root-v4.sh` makes root v4 from v3). At boot it reads `/chosen` `sweetrun` through the
+  IODeviceTree plane (every ADT property is in the registry unless the node is kernel-only), writes it to
+  /private/var/tmp/sweetrun/<name> and runs it with stdout/stderr on /dev/console (USB log). Programs go into
+  boot images with `tools/mkpayload.py --run PROG`. `phone/gputest` exercises the whole ABI from userland
+  (Query, DeviceInfo, BoAlloc + CPU map + BoMap, 100 single submits, one 16-IB submit, BoImport of its own
+  page, timestamp/status) and ends with `GPUTEST PASSED`. Built by the new `phone` workflow (macos-15, iPhoneOS
+  SDK, ad-hoc signed; artifact `phone-bin`).
