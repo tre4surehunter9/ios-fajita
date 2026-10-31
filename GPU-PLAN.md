@@ -306,3 +306,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   root or kernel change: **phone/bigrun** stub; `mkpayload.py --run PROG --bigrun STUB` stores programs over
   15 MB as /chosen `bigrun-0..N` (8 MB parts) + `bigrun-name` and makes the stub the program sweetrun runs; the
   stub joins the parts, runs the program and returns its status.
+- **3.1 PASS (2026-10-31, image 0100mz with bigrun):** fast unpack, then sweetrun -> bigrun (26.7 MB m2vtest from
+  4 parts) -> m2vtest: Turnip device 5.8 s (unpack + dlopen + device), fixture library, **compute 0 bad of 1000,
+  render 0 bad of 64, import 0 bad of 4096**; QuartzCore default.metallib (141 functions) translated on the phone:
+  kernels 3 ok / 4 refused, vertex/fragment pairs 13 ok / 8 refused, 1.1 s (refusals are the functions that need
+  CoreAnimation's function constants or tile functions; the bridge counts them as expected); **M2VTEST PASS**.
+  metal2vulkan works on the A630. Next: 3.2 (kernel 0101: IOAcceleratorES for Metal, surface coherence) and
+  3.3 (SweetMetal2.bundle + installer).
