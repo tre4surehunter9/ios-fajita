@@ -1,0 +1,13 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 09fd13e..4ed5fa1 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -1626,7 +1626,7 @@ cp_stage(void)
+  * gpucc PLL0 L_VAL 0, gfx3d RCG on XO; the GPU ran at ~9.6 MHz).
+  */
+ static uint32_t gpu_freq_index = NGPU_LEVELS - 1;
+-static uint32_t gpu_clk_index;				/* sweetgpuclk=N: we start PLL0 ourselves (0 = off) */
++static uint32_t gpu_clk_index = NGPU_LEVELS - 1;	/* sweetgpuclk=N (default 710 MHz, 0 = off) */
+ 
+ static void
+ gpu_set_freq(void)

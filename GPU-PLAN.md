@@ -439,3 +439,8 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **Kernel patch 0110 (written 2026-10-31):** `pll0_start()` with the latch; if no lock, again via a reset
   cycle (RESET_N 0 -> 1, recalibrates); lock wait 1.5 ms; then steps down 675/596/520/414/342/257 until one
   locks. Each try logs `clk: PLL0 N MHz latched|after reset: latch acked, LOCKED|not locked (...)`.
+- **0110 on the phone (2026-10-31): 710 MHz.** PLL0 latch acked, LOCKED at 1420 MHz on the first try (10 us,
+  mode 0xd1800005, L 0x49 frac 0xf555), gfx3d on it; stats `gpu 709-710 MHz`, up to 19.6 presents/s, GPU busy
+  1-17 %, no faults or hangs. User: "way faster". With 0109's swap-time copy: no more artifacts (user, at 257).
+- **Kernel patch 0111 (2026-10-31): 710 MHz is the default** (sweetgpuclk default 7, sweetgpufreq default 7
+  already; `sweetgpuclk=0` = the old behaviour). Next: GPU present blit (with Phase 5 scaling), GPU interrupts.
