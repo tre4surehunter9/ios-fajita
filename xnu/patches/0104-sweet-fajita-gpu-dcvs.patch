@@ -1,0 +1,258 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index d190f82..74d0e36 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -466,6 +466,103 @@ hfi_cmd(uint32_t id, const uint32_t *payload, uint32_t n, uint32_t reply[4])
+ 	return hdr;
+ }
+ 
++/*
++ * Phase 4: the GPU's clock. On a630 the GMU firmware sets the GPU core clock
++ * and its rails from a performance table the driver sends (HFI v1
++ * PERF_TABLE) and a DCVS vote; without them the core ran at its power-on
++ * clock (0103's stats: GPU busy 70-97 % at 300-550 ms per submission).
++ * Levels as mainline: index 0 is "off", then sdm845.dtsi's GPU OPPs with
++ * their RPMh levels, and the GMU's 200/400 MHz OPPs. Votes are built as
++ * a6xx_gmu_rpmh_arc_votes_init from this phone's own cmd-db level lists.
++ */
++int sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max);
++
++#define NGPU_LEVELS		8
++#define NGMU_LEVELS		3
++static const uint32_t gpu_khz[NGPU_LEVELS] = { 0, 257000, 342000, 414000, 520000, 596000, 675000, 710000 };
++static const uint16_t gpu_rpmh[NGPU_LEVELS] = { 0, 64, 128, 192, 256, 320, 384, 416 };	/* LOW_SVS .. TURBO_L1 */
++static const uint32_t gmu_khz[NGMU_LEVELS] = { 0, 200000, 400000 };
++static const uint16_t gmu_rpmh[NGMU_LEVELS] = { 0, 48, 128 };				/* MIN_SVS, SVS */
++static bool perf_table_sent;
++
++static int
++arc_index(const uint16_t *arc, int n, unsigned level, bool clamp)
++{
++	for (int j = 0; j < n; j++) {
++		if (arc[j] >= level) {
++			return j;
++		}
++	}
++	return clamp ? n - 1 : -1;
++}
++
++/* (primary level << 16) | (secondary index << 8) | primary index, per frequency; 0 on success. */
++static int
++arc_votes(uint32_t *votes, const uint16_t *want, int count, const char *pri_id, const char *sec_id)
++{
++	uint16_t pri[16], sec[16];
++	int np = sweet_rpmh_arc_levels(pri_id, pri, 16), ns = sweet_rpmh_arc_levels(sec_id, sec, 16);
++	if (np <= 0 || ns <= 0) {
++		printf("SWEET GPU: cmd-db %s/%s levels missing (%d/%d)\n", pri_id, sec_id, np, ns);
++		return -1;
++	}
++	for (int i = 0; i < count; i++) {
++		int p = arc_index(pri, np, want[i], false);
++		if (p < 0) {
++			printf("SWEET GPU: level %u not in %s\n", want[i], pri_id);
++			return -1;
++		}
++		int s = arc_index(sec, ns, pri[p], true);
++		votes[i] = ((uint32_t)pri[p] << 16) | ((uint32_t)s << 8) | (uint32_t)p;
++	}
++	printf("SWEET GPU: %s %d levels (top %u), %s %d levels (top %u)\n", pri_id, np, pri[np - 1], sec_id, ns,
++	    sec[ns - 1]);
++	return 0;
++}
++
++/* HFI v1 PERF_TABLE then BW_TABLE (mainline's a630 "off" bus table), between FW_VERSION and TEST. */
++static void
++hfi_perf_tables(void)
++{
++	uint32_t gx[NGPU_LEVELS], cx[NGMU_LEVELS], r[4];
++	if (arc_votes(gx, gpu_rpmh, NGPU_LEVELS, "gfx.lvl", "mx.lvl") ||
++	    arc_votes(cx, gmu_rpmh, NGMU_LEVELS, "cx.lvl", "mx.lvl")) {
++		return;
++	}
++	uint32_t perf[42] = { 0 };				/* struct a6xx_hfi_msg_perf_table_v1 minus header */
++	perf[0] = NGPU_LEVELS;
++	perf[1] = NGMU_LEVELS;
++	for (int i = 0; i < NGPU_LEVELS; i++) {
++		perf[2 + 2 * i] = gx[i];
++		perf[3 + 2 * i] = gpu_khz[i];
++	}
++	for (int i = 0; i < NGMU_LEVELS; i++) {
++		perf[34 + 2 * i] = cx[i];
++		perf[35 + 2 * i] = gmu_khz[i];
++	}
++	uint32_t hp = hfi_cmd(4, perf, 42, r), ep = r[2];
++	uint32_t bw[159] = { 0 };				/* struct a6xx_hfi_msg_bw_table minus header */
++	bw[0] = 1;						/* bw_level_num */
++	bw[1] = 3;						/* cnoc_cmds_num */
++	bw[2] = 3;						/* ddr_cmds_num */
++	bw[3] = 0x05;						/* cnoc_wait_bitmask */
++	bw[4] = 0x07;						/* ddr_wait_bitmask */
++	const uint32_t cnoc_addr[3] = { 0x50034, 0x5007c, 0x5004c };
++	const uint32_t cnoc0[3] = { 0x40000000, 0, 0x40000000 }, cnoc1[3] = { 0x60000001, 0x20000001, 0x60000001 };
++	const uint32_t ddr_addr[3] = { 0x50000, 0x5005c, 0x5000c };
++	for (int i = 0; i < 3; i++) {
++		bw[5 + i] = cnoc_addr[i];			/* cnoc_cmds_addrs[6] at 5 */
++		bw[11 + i] = cnoc0[i];				/* cnoc_cmds_data[0][6] at 11 */
++		bw[17 + i] = cnoc1[i];				/* cnoc_cmds_data[1][6] at 17 */
++		bw[23 + i] = ddr_addr[i];			/* ddr_cmds_addrs[8] at 23 */
++		bw[31 + i] = 0x40000000;			/* ddr_cmds_data[0][8] at 31 */
++	}
++	uint32_t hb = hfi_cmd(3, bw, 159, r), eb = r[2];
++	perf_table_sent = hp && hb && ep == 0 && eb == 0;
++	printf("SWEET GPU: hfi PERF_TABLE 0x%x err %u (gx votes 0x%x .. 0x%x), BW_TABLE 0x%x err %u\n", hp, ep, gx[1],
++	    gx[NGPU_LEVELS - 1], hb, eb);
++}
++
+ static int
+ hfi_handshake(void)
+ {
+@@ -481,6 +578,9 @@ hfi_handshake(void)
+ 	uint32_t h0 = hfi_cmd(0, init, 4, r), err = r[2];
+ 	const uint32_t fwver[1] = { 0x100a0000 };
+ 	uint32_t h1 = hfi_cmd(1, fwver, 1, r), ver = r[3];
++	if (gpu_level >= 3) {
++		hfi_perf_tables();
++	}
+ 	uint32_t h2 = hfi_cmd(5, NULL, 0, r), test = r[3];
+ 	printf("SWEET GPU: hfi INIT 0x%x err %u, FW_VERSION 0x%x ver 0x%08x, TEST 0x%x data 0x%08x\n",
+ 	    h0, err, h1, ver, h2, test);
+@@ -1450,6 +1550,38 @@ cp_stage(void)
+ 	wr(G(GMU_H2G_SET), 1u << OOB_GPU_ACK);					/* clear GPU_SET */
+ }
+ 
++#define GMU_DCVS_ACK_OPTION	0x8ff0
++#define GMU_DCVS_PERF_SETTING	0x8ff4
++#define GMU_DCVS_BW_SETTING	0x8ff8
++#define GMU_DCVS_RETURN		0x8ffc
++#define OOB_DCVS_SET		23			/* legacy: set 23, ack/clear 31 */
++#define OOB_DCVS_ACK		31
++
++/*
++ * a6xx_gmu_set_freq, legacy path: DCVS vote for a perf index (sweetgpufreq=,
++ * default the top, 710 MHz), bus left to the firmware (0xff), DCVS OOB set +
++ * clear. gpucc 0x101c/0x1020 is downstream's gx_gfx3d RCG (not in mainline's
++ * gpucc-sdm845.c: the GMU owns it); only read, as a before/after hint.
++ */
++static uint32_t gpu_freq_index = NGPU_LEVELS - 1;
++
++static void
++gpu_set_freq(void)
++{
++	uint32_t idx = gpu_freq_index < NGPU_LEVELS ? gpu_freq_index : NGPU_LEVELS - 1;
++	uint32_t rcg0 = rd(w.gpucc + 0x101c), cfg0 = rd(w.gpucc + 0x1020);
++	wr(G(GMU_DCVS_ACK_OPTION), 0);
++	wr(G(GMU_DCVS_PERF_SETTING), (3u << 28) | idx);
++	wr(G(GMU_DCVS_BW_SETTING), 0xff);
++	wr(G(GMU_H2G_SET), 1u << OOB_DCVS_SET);
++	int rc = wait_bits(G(GMU_G2H_INFO), 1u << OOB_DCVS_ACK, true, 10000);
++	wr(G(GMU_G2H_CLR), 1u << OOB_DCVS_ACK);
++	wr(G(GMU_H2G_SET), 1u << OOB_DCVS_ACK);			/* a6xx_gmu_clear_oob */
++	printf("SWEET GPU: DCVS %u MHz (index %u): oob %s, return %d, gfx3d rcg 0x%x/0x%x -> 0x%x/0x%x\n",
++	    gpu_khz[idx] / 1000, idx, rc ? "NOT ACKED" : "acked", (int)rd(G(GMU_DCVS_RETURN)), rcg0, cfg0,
++	    rd(w.gpucc + 0x101c), rd(w.gpucc + 0x1020));
++}
++
+ static void
+ gx_up_and_back(void)
+ {
+@@ -1473,6 +1605,9 @@ gx_up_and_back(void)
+ 	}
+ 	uint32_t gdscr = rd(w.gpucc + GPUCC_GX_GDSCR);
+ 	printf("SWEET GPU: sptprac %s (0x%x), gx gdsc 0x%08x\n", sp ? "FAILED" : "on", rd(G(GMU_SPTPRAC_STATUS)), gdscr);
++	if (!sp && (gdscr & (1u << 31)) && perf_table_sent) {
++		gpu_set_freq();
++	}
+ 	if (!sp && (gdscr & (1u << 31))) {
+ 		uint32_t rbbm = rd(w.core + 0x840);
+ 		uint32_t c0 = rd(G(GMU_AO_COUNTER_L));
+@@ -1568,6 +1703,7 @@ sweet_a630_init(void)
+ 	PE_parse_boot_argn("sweetgpupool", &pool_pa, sizeof(pool_pa));
+ 	PE_parse_boot_argn("sweetgpuarena", &arena_size, sizeof(arena_size));
+ 	PE_parse_boot_argn("sweetgpuwait", &wait_mode, sizeof(wait_mode));
++	PE_parse_boot_argn("sweetgpufreq", &gpu_freq_index, sizeof(gpu_freq_index));
+ 	printf("SWEET GPU: Adreno 630 bring-up (sweetgpu=%u), GMU memory at 0x%llx\n", on, pool_pa);
+ 	thread_t thread;
+ 	if (kernel_thread_start(a630_thread, NULL, &thread) == KERN_SUCCESS) {
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 8ff4115..d4d0055 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -17,6 +17,7 @@
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ int sweet_rpmh_bcm_vote_top(const char *res);
++int sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+ #define RH_RSC_PA_SM7150   0x18220000u
+@@ -52,6 +53,7 @@ int sweet_rpmh_bcm_vote_top(const char *res);
+ #define RH_DB_MAX       0x100000u /* policy bound, not a DT size */
+ #define RH_VRM          4u
+ #define RH_BCM          5u       /* cmd-db slave type of bus clock managers */
++#define RH_ARC          3u       /* cmd-db slave type of the rail level managers (gfx.lvl, mx.lvl, cx.lvl) */
+ #define RH_TIMEOUT_US   100000u
+ 
+ extern bool sweet_board_is(const char *want);
+@@ -174,8 +176,18 @@ rh_map(void)
+ 	return 0;
+ }
+ 
++static int
++rh_lookup_aux(const char *res, unsigned want, uint32_t *address, uint32_t *aux_off, uint32_t *aux_len);
++
+ static int
+ rh_lookup(const char *res, unsigned want, uint32_t *address)
++{
++	return rh_lookup_aux(res, want, address, NULL, NULL);
++}
++
++/* The entry's address and, if asked, where its aux data lies in the cmd-db (offset, bytes). */
++static int
++rh_lookup_aux(const char *res, unsigned want, uint32_t *address, uint32_t *aux_off, uint32_t *aux_len)
+ {
+ 	uint32_t key[2] = {0, 0};
+ 	for (unsigned i = 0; i < 8 && res[i]; ++i) {
+@@ -208,6 +220,10 @@ rh_lookup(const char *res, unsigned want, uint32_t *address)
+ 				return EINVAL;
+ 			}
+ 			*address = addr;
++			if (aux_off) {
++				*aux_off = aux + rh_db16(e + 22);
++				*aux_len = rh_db16(e + 20);
++			}
+ 			++matches;
+ 			printf("SWEET RPMH: %s addr=%#x slave=%u aux-version=%#x priority=%#x:%#x\n",
+ 			    res, addr, slave, rh_db16(h + 8),
+@@ -423,4 +439,32 @@ sweet_rpmh_bcm_vote_top(const char *res)
+ 	printf("SWEET RPMH: bus vote %s top -> %d\n", res, error);
+ 	return error;
+ }
++/*
++ * An ARC resource's voltage levels (RPMH_REGULATOR_LEVEL_*), as mainline's
++ * a6xx_gmu_rpmh_read_arc: the aux data is an array of u16, trailing zeros
++ * dropped. Returns the count, 0 on error. For the GMU's performance table.
++ */
++int
++sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max)
++{
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return 0;
++	}
++	unsigned n = 0;
++	uint32_t address = 0, off = 0, len = 0;
++	if (!rh_map() && !rh_lookup_aux(res, RH_ARC, &address, &off, &len)) {
++		n = len / 2;
++		if (n > max) {
++			n = max;
++		}
++		for (unsigned i = 0; i < n; i++) {
++			levels[i] = rh_db16(off + 2 * i);
++		}
++		while (n && levels[n - 1] == 0) {
++			n--;
++		}
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	return (int)n;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

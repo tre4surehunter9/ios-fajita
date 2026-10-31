@@ -349,3 +349,14 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   **DDR (BCM MC0) and the memory NoC (SH0) voted to the top** at GPU start, as ios-flame's 0122 (`sweetddr=0`
   off): sweet_rpmh.c's lookup takes the cmd-db slave type (BCM 5, VRM 4), rh_send takes N commands, new
   `sweet_rpmh_bcm_vote_top` (allowlist MC0/SH0, fajita) sends BCM_TCS_CMD(commit, valid, 0x3fff, 0x3fff).
+- **0103 on the phone (2026-10-31, image 0103s):** bus votes done (MC0 0x50000, SH0 0x5003c, TCS complete), CPU
+  copy 4.3 -> 3.6 ms, but no visible change: **GPU busy 70-97 %, ~300-550 ms per submission** at 1-1.6 presents/s.
+  The GPU itself is slow, by a factor that fits its core running at the power-on clock: nothing ever sent the GMU
+  a performance table or a frequency vote.
+- **Kernel patch 0104 (written 2026-10-31): the GPU clock.** In the HFI v1 handshake, between FW_VERSION and TEST
+  as mainline's a6xx_hfi_start_v1: PERF_TABLE (8 GPU levels 0/257/342/414/520/596/675/710 MHz at RPMh 0/64..416,
+  3 GMU levels 0/200/400 MHz at 0/48/128; votes built as a6xx_gmu_rpmh_arc_votes_init from this phone's cmd-db
+  gfx.lvl/mx.lvl/cx.lvl, read by the new `sweet_rpmh_arc_levels`) and BW_TABLE (mainline's a630 single "off"
+  entry). Once GX is up: legacy DCVS (DCVS_PERF_SETTING (3<<28)|index, BW 0xff, OOB DCVS set 23 / ack 31, read
+  DCVS_RETURN) to the top index (`sweetgpufreq=N` for another). Logs gpucc 0x101c/0x1020 (downstream's gfx3d RCG,
+  unverified) before/after.
