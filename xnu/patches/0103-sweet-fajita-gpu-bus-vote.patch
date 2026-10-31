@@ -1,0 +1,194 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index cffef8d..d190f82 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -998,7 +998,13 @@ sweet_gpu_unmap(uint64_t iova, uint64_t size)
+ #define PC_CCU_INVALIDATE_COLOR	0x19
+ #define MAX_SUBMIT_IBS		16
+ #define CP_REG_TO_MEM		0x3e
+-#define CP_ALWAYS_ON_COUNTER	0x0980
++/*
++ * The GMU's always-on counter (19.2 MHz) as the CP sees it: on a630 GMU
++ * registers are addressed from the GPU base (msm: "add 0x1a800" for PM4).
++ * 0102 stamped CP_ALWAYS_ON_COUNTER (0x980) and read 0: mainline's a6xx
++ * timestamps use this GMU counter instead.
++ */
++#define CP_ALWAYS_ON_COUNTER	0x1f888
+ #define STAT_SLOTS		64		/* 128 B each: start stamp at +0, end at +64 (IS_64B writes 64 B) */
+ 
+ /*
+@@ -1295,6 +1301,8 @@ gpu_selftest(void)
+ 	return (good == 100 && batch == 50) ? 0 : -1;
+ }
+ 
++int sweet_rpmh_bcm_vote_top(const char *res);
++
+ /* SweetFramebuffer.cpp: panel presents and the time their CPU copies took. */
+ extern uint64_t sweet_fb_presents, sweet_fb_copy_ns;
+ 
+@@ -1354,6 +1362,13 @@ gpu_persist(void)
+ 	}
+ 	gpu_ready = true;
+ 	printf("SWEET GPU: READY: submissions and fences work, GPU kept up\n");
++	/* DDR and the memory NoC to the top for the GPU (sweetddr=0: leave ABL's levels), as ios-flame 0122. */
++	uint32_t ddr = 1;
++	PE_parse_boot_argn("sweetddr", &ddr, sizeof(ddr));
++	if (ddr) {
++		(void)sweet_rpmh_bcm_vote_top("MC0");
++		(void)sweet_rpmh_bcm_vote_top("SH0");
++	}
+ 	thread_t st;
+ 	if (kernel_thread_start(stats_thread, NULL, &st) == KERN_SUCCESS) {
+ 		thread_deallocate(st);
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index 34dfa88..8ff4115 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -16,6 +16,7 @@
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
++int sweet_rpmh_bcm_vote_top(const char *res);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+ #define RH_RSC_PA_SM7150   0x18220000u
+@@ -50,6 +51,7 @@ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ #define RH_DB_ENTRY     24u
+ #define RH_DB_MAX       0x100000u /* policy bound, not a DT size */
+ #define RH_VRM          4u
++#define RH_BCM          5u       /* cmd-db slave type of bus clock managers */
+ #define RH_TIMEOUT_US   100000u
+ 
+ extern bool sweet_board_is(const char *want);
+@@ -173,7 +175,7 @@ rh_map(void)
+ }
+ 
+ static int
+-rh_lookup(const char *res, uint32_t *address)
++rh_lookup(const char *res, unsigned want, uint32_t *address)
+ {
+ 	uint32_t key[2] = {0, 0};
+ 	for (unsigned i = 0; i < 8 && res[i]; ++i) {
+@@ -200,9 +202,9 @@ rh_lookup(const char *res, uint32_t *address)
+ 				continue;
+ 			}
+ 			uint32_t addr = rh_read(rh_db, e + 16);
+-			if (slave != RH_VRM || (addr >> 16) != RH_VRM || (addr & 15u) ||
++			if (slave != want || (addr >> 16) != want || (addr & 3u) ||
+ 			    !rh_range(aux + rh_db16(e + 22), rh_db16(e + 20))) {
+-				printf("SWEET RPMH: invalid VRM entry for %s\n", res);
++				printf("SWEET RPMH: invalid slave-%u entry for %s\n", want, res);
+ 				return EINVAL;
+ 			}
+ 			*address = addr;
+@@ -232,9 +234,13 @@ rh_free(unsigned t)
+ 	    !(rh_read(rh_tcs, RH_IRQ_STATUS) & (1u << t));
+ }
+ 
++/* ACTIVE (AMC) request of n commands (address + offsets[i] <- values[i]), waited for. */
+ static int
+-rh_send(uint32_t address, unsigned mv)
++rh_send(uint32_t address, unsigned n, const uint32_t *offsets, const uint32_t *values)
+ {
++	if (n == 0 || n > 3) {
++		return EINVAL;
++	}
+ 	int chosen = -1;
+ 	for (unsigned t = 0; t < RH_ACTIVE_N; ++t) {
+ 		uint32_t b = t * RH_TCS_STRIDE;
+@@ -280,11 +286,10 @@ rh_send(uint32_t address, unsigned mv)
+ 	}
+ 	/* From here an uncertain write/timeout quarantines our slot for this boot. */
+ 	rh_poisoned = true;
+-	/* HPM (raw 7) is supported by this PMIC5 LDO; enable comes last. */
+-	const uint32_t offsets[3] = {0, 8, 4};
+-	const uint32_t values[3] = {mv, 7, 1};
+-	printf("SWEET RPMH: TCS%u ACTIVE %u mV mode=7 enable=1 irq-enable=%#x\n", t, mv, irq_en);
+-	for (unsigned c = 0; c < 3; ++c) {
++	uint32_t mask = (1u << n) - 1u;
++	printf("SWEET RPMH: TCS%u ACTIVE %u command(s) at %#x, first %#x, irq-enable=%#x\n", t, n, address,
++	    values[0], irq_en);
++	for (unsigned c = 0; c < n; ++c) {
+ 		uint32_t cmd = b + c * RH_CMD_STRIDE;
+ 		if (!rh_sync(cmd + RH_MSGID, RH_WRITE_ACK) ||
+ 		    !rh_sync(cmd + RH_ADDR, address + offsets[c]) ||
+@@ -292,7 +297,7 @@ rh_send(uint32_t address, unsigned mv)
+ 			return EIO;
+ 		}
+ 	}
+-	if (!rh_sync(b + RH_WAIT, 7) || !rh_sync(b + RH_ENABLE, 7) ||
++	if (!rh_sync(b + RH_WAIT, mask) || !rh_sync(b + RH_ENABLE, mask) ||
+ 	    !rh_sync(b + RH_CONTROL, 0) || !rh_sync(b + RH_CONTROL, RH_AMC_EN)) {
+ 		return EIO;
+ 	}
+@@ -303,7 +308,7 @@ rh_send(uint32_t address, unsigned mv)
+ 		irq = rh_read(rh_tcs, RH_IRQ_STATUS);
+ 		idle = rh_read(rh_tcs, b + RH_STATUS);
+ 		bool complete = true;
+-		for (unsigned c = 0; c < 3; ++c) {
++		for (unsigned c = 0; c < n; ++c) {
+ 			status[c] = rh_read(rh_tcs, b + RH_CMD_STATUS + c * RH_CMD_STRIDE);
+ 			complete &= status[c] != 0xffffffffu &&
+ 			    (status[c] & (RH_ISSUED | RH_COMPLETE)) == (RH_ISSUED | RH_COMPLETE);
+@@ -334,7 +339,7 @@ rh_send(uint32_t address, unsigned mv)
+ 		return EIO;
+ 	}
+ 	rh_poisoned = false;
+-	printf("SWEET RPMH: ACTIVE vote complete (rail voltage requires hardware verification)\n");
++	printf("SWEET RPMH: ACTIVE vote complete\n");
+ 	return 0;
+ }
+ 
+@@ -371,10 +376,13 @@ sweet_rpmh_vreg_enable(const char *res, unsigned mv)
+ 	}
+ 	error = rh_map();
+ 	if (!error) {
+-		error = rh_lookup(res, &address);
++		error = rh_lookup(res, RH_VRM, &address);
+ 	}
+ 	if (!error) {
+-		error = rh_send(address, mv);
++		/* HPM (raw 7) is supported by this PMIC5 LDO; enable comes last. */
++		const uint32_t offsets[3] = {0, 8, 4};
++		const uint32_t values[3] = {mv, 7, 1};
++		error = rh_send(address, 3, offsets, values);
+ 	}
+ out:
+ 	if (error) {
+@@ -383,4 +391,36 @@ out:
+ 	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
+ 	return error;
+ }
++/*
++ * Bus bandwidth to the top level for the GPU (bsd/dev/sweet_a630.c): nothing
++ * else votes DDR (BCM MC0) or the memory NoC (SH0) for it, so the GPU's
++ * memory traffic ran at whatever ABL left. BCM command as mainline's
++ * BCM_TCS_CMD(commit, valid, x avg, y peak), both at the 14-bit maximum
++ * (the BCM caps it at its top level), as ios-flame's 0122.
++ */
++int
++sweet_rpmh_bcm_vote_top(const char *res)
++{
++	if (!res || !sweet_board_is("oneplus,fajita") || (strcmp(res, "MC0") && strcmp(res, "SH0"))) {
++		return EINVAL;
++	}
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	int error = EIO;
++	uint32_t address = 0;
++	if (!rh_poisoned) {
++		error = rh_map();
++		if (!error) {
++			error = rh_lookup(res, RH_BCM, &address);
++		}
++		if (!error) {
++			const uint32_t offset = 0, value = 1u << 30 | 1u << 29 | 0x3fffu << 14 | 0x3fffu;
++			error = rh_send(address, 1, &offset, &value);
++		}
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	printf("SWEET RPMH: bus vote %s top -> %d\n", res, error);
++	return error;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */

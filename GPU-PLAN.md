@@ -341,3 +341,11 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   each`; SweetFramebuffer counts presents and times its flush + CPU copy. Fence waits: on this kernel `delay()`
   always blocks (cpu_idle_latency is 0), so the old loop slept/woke every 10 us; now they poll for 50 us, then
   sleep 200 us at a time (`sweetgpuwait=0` restores the old loop for comparison).
+- **0102 on the phone (2026-10-31, image 0102s, user's activity script): 0.2-4.8 presents/s** (mostly 1-2/s),
+  CPU copy to the panel ~4.3 ms each (not the bottleneck), but **fence waits ~300 ms per submission** (e.g. 16
+  submits, 224 waits, 4880 ms waited in 5 s). "GPU busy" read 0: CP_ALWAYS_ON_COUNTER (0x980) gives nothing on
+  a6xx (mainline's a6xx timestamps use the GMU AO counter). Stack samples: mostly idle threads in syscalls.
+- **Kernel patch 0103 (written 2026-10-31):** stamps read the GMU always-on counter as the CP sees it (0x1f888);
+  **DDR (BCM MC0) and the memory NoC (SH0) voted to the top** at GPU start, as ios-flame's 0122 (`sweetddr=0`
+  off): sweet_rpmh.c's lookup takes the cmd-db slave type (BCM 5, VRM 4), rh_send takes N commands, new
+  `sweet_rpmh_bcm_vote_top` (allowlist MC0/SH0, fajita) sends BCM_TCS_CMD(commit, valid, 0x3fff, 0x3fff).
