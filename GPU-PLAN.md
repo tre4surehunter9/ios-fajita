@@ -411,3 +411,12 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   STANDBY, L + 16-bit FRAC, RESET_N, OPMODE RUN, wait LOCK_DET <= 1 ms, USER_CTL outputs + even /1,
   OUTCTRL on), then gfx3d CFG = 0x101 + CMD UPDATE. No lock = RCG stays on XO. Removes 0106's dumps.
   Log: `clk before: ...`, `clk: PLL0 locked at N MHz ...`; the 5-second `gpu N MHz` shows the result.
+- **0107 on the phone (2026-10-31).** `sweetgpuclk=1 sweetgpufreq=1` (257 MHz): **the GMU started PLL0 itself**
+  (mode 0xd1000005 locked, L 0x1b frac 0xcfae = 534 MHz, gfx3d RCG 0x101) and the core measured **266 MHz**:
+  up to 10.8 presents/s, ~15 ms GPU per submission, no faults. So the core = PLL0 / 2 (XO gave 9.6 MHz).
+  `sweetgpuclk=7 sweetgpufreq=7` (boot vote gfx 9 / mx 4): the GMU switched the RCG to PLL0 but left PLL0
+  **unlocked** (mode 0x01000005, L 0x1 frac 0x890a): back to 9 MHz.
+- **Kernel patch 0108 (written 2026-10-31): take over PLL0 when the GMU fails.** If PLL0 is locked and the RCG
+  is on it, leave it. Otherwise: APPS ACTIVE votes `gfx.lvl` = the level's index and `mx.lvl` = its top
+  (sweet_rpmh_arc_vote, fajita gfx/mx only), RCG to XO, PLL0 at **2 x f** (710 MHz: 1420 MHz, L 0x49 frac
+  0xf555), RCG 0x101.

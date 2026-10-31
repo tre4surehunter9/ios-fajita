@@ -1,0 +1,120 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 74640bb..9dba39d 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -476,6 +476,7 @@ hfi_cmd(uint32_t id, const uint32_t *payload, uint32_t n, uint32_t reply[4])
+  * a6xx_gmu_rpmh_arc_votes_init from this phone's own cmd-db level lists.
+  */
+ int sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max);
++int sweet_rpmh_arc_vote(const char *res, unsigned hlvl);
+ 
+ #define NGPU_LEVELS		8
+ #define NGMU_LEVELS		3
+@@ -1640,6 +1641,15 @@ gpu_set_freq(void)
+  * mainline clk-alpha-pll.c's (alpha_pll_fabia_enable). The rail: the GMU's
+  * boot vote (gx_up_and_back) is set to this level's perf-table indices
+  * before GX comes up. If the PLL does not lock, the RCG stays on XO.
++ *
++ * 0108: measured on the phone, the GMU itself starts PLL0 for a DCVS vote it
++ * can serve (257 MHz: PLL0 locked at 534 MHz, RCG 0x101, CP clock 266 MHz),
++ * so the core runs at PLL0 / 2 (XO gave 9.6 MHz), and PLL0 is programmed at
++ * twice the GPU frequency. For 710 MHz the GMU switched the RCG but left PLL0
++ * unlocked (L 0x1) and the core fell back to 9.6 MHz. So: if PLL0 is locked
++ * and the RCG on it, the GMU's work stands; otherwise we vote the rails from
++ * APPS (gfx at the level's index, mx at its top), put the RCG on XO, start
++ * PLL0 at 2 x f and switch back.
+  */
+ #define PLL0_MODE		0x0000
+ #define PLL0_L_VAL		0x0004
+@@ -1661,15 +1671,27 @@ static void
+ gpu_clk_set(uint32_t level)
+ {
+ 	vm_offset_t cc = w.gpucc;
+-	uint64_t hz = (uint64_t)gpu_khz[level] * 1000;
++	uint64_t hz = (uint64_t)gpu_khz[level] * 2000;		/* PLL0 = 2 x the core clock */
+ 	uint32_t l = (uint32_t)(hz / 19200000), frac = (uint32_t)(((hz % 19200000) << 16) / 19200000);
+ 	printf("SWEET GPU: clk before: pll0 mode 0x%08x L 0x%x frac 0x%x opmode 0x%x user 0x%x status 0x%x, "
+ 	    "gfx3d rcg 0x%x/0x%x\n", rd(cc + PLL0_MODE), rd(cc + PLL0_L_VAL), rd(cc + PLL0_FRAC), rd(cc + PLL0_OPMODE),
+ 	    rd(cc + PLL0_USER_CTL), rd(cc + PLL0_STATUS), rd(cc + GFX3D_CMD_RCGR), rd(cc + GFX3D_CFG_RCGR));
+-	if ((rd(cc + GFX3D_CFG_RCGR) & 0x700) != 0) {
+-		printf("SWEET GPU: clk: gfx3d not on XO, left alone\n");
++	if ((rd(cc + GFX3D_CFG_RCGR) & 0x700) == 0x100 && (rd(cc + PLL0_MODE) & PLL_LOCK_DET)) {
++		printf("SWEET GPU: clk: the GMU has PLL0 locked and gfx3d on it, left alone\n");
++		return;
++	}
++	if (!perf_table_sent || sweet_rpmh_arc_vote("gfx.lvl", gpu_gx_votes[level] & 0xff) ||
++	    sweet_rpmh_arc_vote("mx.lvl", (gpu_gx_votes[NGPU_LEVELS - 1] >> 8) & 0xff)) {
++		printf("SWEET GPU: clk: rail votes failed, clock left as it is\n");
+ 		return;
+ 	}
++	if ((rd(cc + GFX3D_CFG_RCGR) & 0x700) != 0) {
++		wr(cc + GFX3D_CFG_RCGR, 0);			/* XO while PLL0 is reprogrammed */
++		wr(cc + GFX3D_CMD_RCGR, rd(cc + GFX3D_CMD_RCGR) | RCG_UPDATE);
++		for (unsigned t = 0; t < 100 && (rd(cc + GFX3D_CMD_RCGR) & RCG_UPDATE); t++) {
++			delay(10);
++		}
++	}
+ 	wr(cc + PLL0_MODE, rd(cc + PLL0_MODE) & ~PLL_OUTCTRL);
+ 	wr(cc + PLL0_OPMODE, 0);				/* STANDBY */
+ 	wr(cc + PLL0_L_VAL, l);
+@@ -1697,8 +1719,8 @@ gpu_clk_set(uint32_t level)
+ 		us += 10;
+ 	}
+ 	uint32_t cmd = rd(cc + GFX3D_CMD_RCGR);
+-	printf("SWEET GPU: clk: PLL0 locked at %u MHz (L 0x%x frac 0x%x, mode 0x%08x), gfx3d rcg 0x%x/0x%x%s\n",
+-	    gpu_khz[level] / 1000, l, frac, rd(cc + PLL0_MODE), cmd, rd(cc + GFX3D_CFG_RCGR),
++	printf("SWEET GPU: clk: PLL0 locked at %u MHz for %u MHz (L 0x%x frac 0x%x, mode 0x%08x), gfx3d rcg 0x%x/0x%x%s\n",
++	    (uint32_t)(hz / 1000000), gpu_khz[level] / 1000, l, frac, rd(cc + PLL0_MODE), cmd, rd(cc + GFX3D_CFG_RCGR),
+ 	    (cmd & RCG_UPDATE) ? " UPDATE STUCK" : (cmd & RCG_ROOT_OFF) ? " ROOT OFF" : "");
+ }
+ 
+diff --git a/bsd/dev/sweet_rpmh.c b/bsd/dev/sweet_rpmh.c
+index d4d0055..e00db1e 100644
+--- a/bsd/dev/sweet_rpmh.c
++++ b/bsd/dev/sweet_rpmh.c
+@@ -18,6 +18,7 @@ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
+ int sweet_rpmh_vreg_enable(const char *res, unsigned mv);
+ int sweet_rpmh_bcm_vote_top(const char *res);
+ int sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max);
++int sweet_rpmh_arc_vote(const char *res, unsigned hlvl);
+ 
+ /* Live downstream DT has two positional reg entries, no reg-names. */
+ #define RH_RSC_PA_SM7150   0x18220000u
+@@ -467,4 +468,37 @@ sweet_rpmh_arc_levels(const char *res, uint16_t *levels, unsigned max)
+ 	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
+ 	return (int)n;
+ }
++/*
++ * An ACTIVE level vote (an index into the ARC's cmd-db level list, as
++ * mainline's rpmhpd) for the GPU rails from the APPS DRV (0108). Only gfx.lvl
++ * and mx.lvl on fajita: RPMh takes the maximum over all DRVs, nothing else on
++ * APPS votes gfx, and the GPU code only asks mx for its top level, so this can
++ * only raise a rail.
++ */
++int
++sweet_rpmh_arc_vote(const char *res, unsigned hlvl)
++{
++	if (!res || !sweet_board_is("oneplus,fajita") || (strcmp(res, "gfx.lvl") && strcmp(res, "mx.lvl")) ||
++	    hlvl > 15) {
++		return EINVAL;
++	}
++	if (__atomic_exchange_n(&rh_lock, 1, __ATOMIC_ACQUIRE)) {
++		return EBUSY;
++	}
++	int error = EIO;
++	uint32_t address = 0;
++	if (!rh_poisoned) {
++		error = rh_map();
++		if (!error) {
++			error = rh_lookup(res, RH_ARC, &address);
++		}
++		if (!error) {
++			const uint32_t offset = 0, value = hlvl;
++			error = rh_send(address, 1, &offset, &value);
++		}
++	}
++	__atomic_store_n(&rh_lock, 0, __ATOMIC_RELEASE);
++	printf("SWEET RPMH: rail vote %s level index %u -> %d\n", res, hlvl, error);
++	return error;
++}
+ #endif /* ARM64_BOARD_CONFIG_SWEET */
