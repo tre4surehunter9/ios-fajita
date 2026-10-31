@@ -214,3 +214,11 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   (Query, DeviceInfo, BoAlloc + CPU map + BoMap, 100 single submits, one 16-IB submit, BoImport of its own
   page, timestamp/status) and ends with `GPUTEST PASSED`. Built by the new `phone` workflow (macos-15, iPhoneOS
   SDK, ad-hoc signed; artifact `phone-bin`).
+- **0098 + root v4 on the phone (2026-10-31, image 0098g): PHASE 2.2 PASS, a normal iOS process drives the GPU.**
+  Root v4 (launcher) flashed; boot to SpringBoard as usual. Kernel self-test 100/100 + 50/50 (74 us), READY, then
+  launchd ran `sweetrun`, which ran `gputest` from the payload: client opened (type 2), window
+  0x200000000-0x300000000; ABI v1, 39-bit VA, 36-bit PA; chip 0x06030001, GMEM 1 MiB at 0x100000; **100/100 single
+  submits correct, 123 us round trip from userland; one 16-IB submit 16/16 (fence 251); BoImport of its own page
+  written by the GPU and read back by the CPU (EL0 dc civac works); timestamp advanced, faults 0; GPUTEST PASSED**,
+  exit 0. Every ABI method used once (1, 15, 7, 2, 13, 3, 5, 6, 16, 4, 8). Note: the USB log has binary bytes,
+  so search it with `grep -a`. Next: 2.3, Turnip for iOS on GitHub Actions + vktest; settle UBWC first.
