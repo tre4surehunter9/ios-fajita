@@ -1,0 +1,133 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index a62416c..3bc0a31 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -51,6 +51,27 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ #include <kern/clock.h>
+ #include <sys/proc.h>
+ 
++extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++
++/*
++ * sweetmtl=2: the GPU renders the surfaces (SweetMetal2.bundle, imports of
++ * the client's pages) while this copy reads them through the cacheable
++ * kernel view, so lines the CPU still holds would be stale: clean+invalidate
++ * the source rows first (lines are physically tagged; the client cleaned its
++ * own writes before the GPU used them, so nothing dirty is lost).
++ */
++static int
++sweet_fb_gpu_surfaces(void)
++{
++	static int v = -1;
++	if (v < 0) {
++		uint32_t mtl = 0;
++		PE_parse_boot_argn("sweetmtl", &mtl, sizeof(mtl));
++		v = mtl == 2;
++	}
++	return v;
++}
++
+ enum {
+ 	kSweetFBGetLayerDefaultSurface  = 3,
+ 	kSweetFBSwapBegin               = 4,
+@@ -391,6 +412,10 @@ AppleCLCD::present(const uint8_t *rec)
+ 			src = 0;
+ 		}
+ 		if (src != 0 && bpe == 4) {
++			if (sweet_fb_gpu_surfaces()) {
++				flush_dcache64((addr64_t)(src + s->offset + (uint64_t)sy * s->bytesPerRow),
++				    (unsigned)((uint64_t)h * s->bytesPerRow), FALSE);
++			}
+ 			for (int32_t y = 0; y < h; y++) {
+ 				memcpy((void *)(fPixels + (uint64_t)(dy + y) * fRowBytes + (uint64_t)dx * 4),
+ 				    (const void *)(src + s->offset + (uint64_t)(sy + y) * s->bytesPerRow + (uint64_t)sx * 4),
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 8a678ba..50da6c3 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -20,8 +20,12 @@
+  *  - Submit: up to 16 IBs inside the client's window, one CACHE_FLUSH_TS
+  *    fence (sweet_gpu_submit_ibs). There is one ring; every queue is it.
+  *
+- * Not a Metal device: Metal looks for IOAcceleratorES, which this is not,
+- * so Core Animation keeps its software path until Phase 3.
++ * Not a Metal device by itself: Metal looks for IOAcceleratorES services.
++ * With sweetmtl=2 (Phase 3) SweetMetal is published as well: an
++ * IOAcceleratorES naming SweetMetal2.bundle (metal2vulkan + Turnip, phone/
++ * metal2) with the same user client, which Turnip's darwin backend also opens
++ * by default. Without it Metal finds no device and Core Animation keeps its
++ * CPU renderer.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <IOKit/IOService.h>
+@@ -92,6 +96,54 @@ SweetGPU::start(IOService *provider)
+ 	return true;
+ }
+ 
++/* ---- Metal (sweetmtl=2) ---- */
++
++/*
++ * What Metal.framework enumerates (MTLRegisterDevices): it loads
++ * /System/Library/Extensions/<MetalPluginName>.bundle and asks its
++ * <MetalPluginClassName> for a device with this service. As ios-flame 0096/0116.
++ */
++class IOAcceleratorES : public IOService {
++	OSDeclareDefaultStructors(IOAcceleratorES);
++};
++
++OSDefineMetaClassAndStructors(IOAcceleratorES, IOService);
++
++class SweetMetal : public IOAcceleratorES {
++	OSDeclareDefaultStructors(SweetMetal);
++
++public:
++	IOService *probe(IOService *provider, SInt32 *score) APPLE_KEXT_OVERRIDE;
++	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
++};
++
++OSDefineMetaClassAndStructors(SweetMetal, IOAcceleratorES);
++
++IOService *
++SweetMetal::probe(IOService *provider, SInt32 *score)
++{
++	uint32_t gpu = 0, mtl = 0;
++	PE_parse_boot_argn("sweetgpu", &gpu, sizeof(gpu));
++	PE_parse_boot_argn("sweetmtl", &mtl, sizeof(mtl));
++	return gpu >= 3 && mtl == 2 && sweet_board_is("oneplus,fajita") ? IOService::probe(provider, score) : NULL;
++}
++
++bool
++SweetMetal::start(IOService *provider)
++{
++	if (!IOService::start(provider)) {
++		return false;
++	}
++	setProperty("MetalPluginName", "SweetMetal2");
++	setProperty("MetalPluginClassName", "SweetMTL2Device");
++	setProperty("IOGLBundleName", "SweetMetal2");
++	setProperty("model", "Adreno 630");
++	setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
++	registerService();
++	IOLog("SWEET GPU: IOAcceleratorES published for Metal (MetalPluginName SweetMetal2)\n");
++	return true;
++}
++
+ /* ---- arena memory still mapped into some task ---- */
+ 
+ /*
+diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
+index f652e39..89ab502 100644
+--- a/iokit/KernelConfigTables.cpp
++++ b/iokit/KernelConfigTables.cpp
+@@ -87,6 +87,11 @@ const char * gIOKernelConfigTables =
+     "     'IOProviderClass' = IOResources;"
+     "     'IOMatchCategory' = SweetGPU;"
+     "   },"
++    "   {"
++    "     'IOClass'         = SweetMetal;"
++    "     'IOProviderClass' = IOResources;"
++    "     'IOMatchCategory' = SweetMetal;"
++    "   },"
+ #endif
+     "   {"
+     "     'IOClass'         = IOPanicPlatform;"

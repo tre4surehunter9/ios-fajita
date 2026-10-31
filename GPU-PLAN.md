@@ -313,3 +313,8 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   CoreAnimation's function constants or tile functions; the bridge counts them as expected); **M2VTEST PASS**.
   metal2vulkan works on the A630. Next: 3.2 (kernel 0101: IOAcceleratorES for Metal, surface coherence) and
   3.3 (SweetMetal2.bundle + installer).
+- **Kernel patch 0101 (written 2026-10-31): 3.2.** With `sweetmtl=2` (and `sweetgpu=3`, fajita) the class
+  `SweetMetal : IOAcceleratorES` is published on IOResources with MetalPluginName/IOGLBundleName SweetMetal2,
+  MetalPluginClassName SweetMTL2Device, model "Adreno 630", user client SweetGPUUserClient (also what Turnip opens
+  by default: service IOAcceleratorES, type 0x4147). SweetFramebuffer, with sweetmtl=2, cleans+invalidates the
+  source rows of a surface (flush_dcache64 by VA) before its CPU copy to the panel.
