@@ -472,3 +472,5 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   PINGPONG0-3 arrived; **PINGPONG0 AUTOREFRESH_CONFIG 0x80000001** (enabled, every frame): ABL left the
   command-mode panel on auto-refresh from the splash buffer. The 8 SSPP lines and CTL0 were dropped (burst).
   **0114:** 50 ms between readout lines, printed at ~20 s and ~60 s.
+- **Root v5 on the phone (2026-10-31): all apps are there** (user: "everything is there"; logo ~3 s, no long
+  reseed visible). SweetMetal2 from the offline bundle works (GPU-composited as before).
