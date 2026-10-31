@@ -1,0 +1,67 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 12b1cb3..34c50c5 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -53,6 +53,54 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ 
+ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
+ extern "C" int sweet_gpu_wait_all_ns(uint64_t timeout_ns);
++extern "C" vm_offset_t ml_io_map(vm_offset_t phys_addr, vm_size_t size);
++extern "C" bool sweet_board_is(const char *want);
++
++/*
++ * 0112, read-only: which MDP pipe ABL left scanning the splash buffer, with
++ * its address, stride and format, and the CTL / pingpong (auto-refresh)
++ * state, so the GPU present blit (destination pitch must be a multiple of
++ * 64; ours is 4320) or a direct flip can be planned. Layout: mainline DPU,
++ * catalog/dpu_4_0_sdm845.h (MDP at 0x0ae01000, sdm845.dtsi; VIG0-3 0x4000..
++ * 0xa000, DMA0-3 0x24000..0x2a000, CTL0-4 0x1000 + 0x200 n, PINGPONG0-3
++ * 0x70000 + 0x800 n), dpu_hw_sspp.c (SRC_SIZE 0x00, SRC_XY 0x08, OUT_SIZE
++ * 0x0c, OUT_XY 0x10, SRC0_ADDR 0x14, YSTRIDE0 0x24, FORMAT 0x30, UNPACK
++ * 0x34), dpu_hw_ctl.c (LAYER(lm) 4 lm / LM_5 0x24, TOP 0x14, FLUSH 0x18),
++ * dpu_hw_pingpong.c (TEAR_CHECK_EN 0x0, AUTOREFRESH_CONFIG 0x30).
++ */
++static void
++sweet_mdp_dump(void)
++{
++	if (!sweet_board_is("oneplus,fajita")) {
++		return;
++	}
++	vm_offset_t mdp = ml_io_map(0x0ae01000, 0x8f000);
++	if (mdp == 0) {
++		return;
++	}
++#define MDP_RD(off) (*(volatile uint32_t *)(mdp + (off)))
++	static const struct { const char *name; uint32_t off; } pipes[] = {
++		{ "vig0", 0x4000 }, { "vig1", 0x6000 }, { "vig2", 0x8000 }, { "vig3", 0xa000 },
++		{ "dma0", 0x24000 }, { "dma1", 0x26000 }, { "dma2", 0x28000 }, { "dma3", 0x2a000 },
++	};
++	for (unsigned i = 0; i < sizeof(pipes) / sizeof(pipes[0]); i++) {
++		uint32_t o = pipes[i].off;
++		IOLog("SWEET MDP: %s src_size 0x%08x src_xy 0x%08x out_size 0x%08x out_xy 0x%08x addr 0x%08x "
++		    "ystride 0x%08x format 0x%08x unpack 0x%08x\n", pipes[i].name, MDP_RD(o), MDP_RD(o + 0x08),
++		    MDP_RD(o + 0x0c), MDP_RD(o + 0x10), MDP_RD(o + 0x14), MDP_RD(o + 0x24), MDP_RD(o + 0x30),
++		    MDP_RD(o + 0x34));
++	}
++	for (unsigned i = 0; i < 5; i++) {
++		uint32_t o = 0x1000 + 0x200 * i;
++		IOLog("SWEET MDP: ctl%u layer lm0 0x%08x lm1 0x%08x lm2 0x%08x lm5 0x%08x top 0x%08x flush 0x%08x\n", i,
++		    MDP_RD(o), MDP_RD(o + 0x4), MDP_RD(o + 0x8), MDP_RD(o + 0x24), MDP_RD(o + 0x14), MDP_RD(o + 0x18));
++	}
++	for (unsigned i = 0; i < 4; i++) {
++		uint32_t o = 0x70000 + 0x800 * i;
++		IOLog("SWEET MDP: pingpong%u tear_check 0x%08x autorefresh 0x%08x\n", i, MDP_RD(o), MDP_RD(o + 0x30));
++	}
++#undef MDP_RD
++}
+ 
+ /* Read by bsd/dev/sweet_a630.c's 5-second stats line (Phase 4): presents and their CPU copy time. */
+ extern "C" {
+@@ -230,6 +278,7 @@ AppleCLCD::start(IOService *provider)
+ 	registerService();
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
++	sweet_mdp_dump();
+ 	return true;
+ }
+ 

@@ -444,3 +444,13 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   1-17 %, no faults or hangs. User: "way faster". With 0109's swap-time copy: no more artifacts (user, at 257).
 - **Kernel patch 0111 (2026-10-31): 710 MHz is the default** (sweetgpuclk default 7, sweetgpufreq default 7
   already; `sweetgpuclk=0` = the old behaviour). Next: GPU present blit (with Phase 5 scaling), GPU interrupts.
+- **Present blit, started (user, 2026-10-31).** Mesa fd6_blitter.cc: the A6xx 2D engine scales (separate
+  GRAS_A2D_SRC_XMIN..YMAX / GRAS_A2D_DEST_TL/BR rectangles, TPL1_A2D_SRC_TEXTURE_INFO filter bit; render mode
+  RM6_BLIT2DSCALE, CCU bypass, CP_BLIT(BLIT_OP_SCALE)); A630 offsets from a6xx.xml (RB_A2D_BLT_CNTL 0x8c00,
+  GRAS_A2D_BLT_CNTL 0x8400, GRAS_A2D_SRC_* 0x8401-0x8404 (24.8 at bits 8..24), DEST_TL/BR 0x8405/0x8406,
+  SP_A2D_OUTPUT_INFO 0xacc0, RB_A2D_PIXEL_CNTL 0x8c01, TPL1_A2D_SRC_TEXTURE_INFO/SIZE/BASE/PITCH 0xb4c0-0xb4c4,
+  RB_A2D_DEST_BUFFER_INFO/BASE/PITCH 0x8c17-0x8c1a). **Blocker: RB_A2D_DEST_BUFFER_PITCH is in 64-byte units
+  and the panel's pitch is 4320** (ABL's MDP pipe, never reprogrammed by us). Options: (A) MDP scan-out pitch
+  4352, then blit + scale into the panel; (B) the MDP scans the iOS surface directly (VIG pipe scaler): zero copy.
+- **Kernel patch 0112 (2026-10-31): read-only MDP inventory** at AppleCLCD start (fajita): all 8 SSPPs
+  (size/xy/addr/ystride/format/unpack), CTL0-4 (layers/top/flush), PINGPONG0-3 (tear check, auto-refresh).
