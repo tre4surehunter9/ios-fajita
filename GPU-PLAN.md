@@ -236,3 +236,11 @@ Metal implemented on Vulkan, the stack ios-flame runs).
   Kernel **0100**: a process named `sweetrun` gets no per-process memory limit, wherever launchd sets one
   (memorystatus_update at spawn, memorystatus_set_memlimit_properties_internal later); its children start
   without one anyway (kern_fork.c). No root change needed.
+- **0100 + vktest on the phone (2026-10-31, image 0100v): PHASE 2 MILESTONE, Vulkan on the A630.** sweetrun no
+  longer killed; vktest unpacked Turnip (3.2 -> 18 MB in 343 ms), dlopen 1251 ms, opened SweetGPU (type 0x4147,
+  tunnel), **`PASS device: Turnip Adreno (TM) 630, Vulkan 1.3.354`**, device created in 213 ms; **empty submit round
+  trip mean 0.268 ms (best 0.194); fill+copy 1 MB 0 wrong words; compute shader compiled on the phone in 71 ms,
+  0 wrong of 65536; 256x256 triangle (pipeline compiled on the phone in 30 ms) correct, centre red, corner blue;
+  `VKTEST ALL PASS: 0 failed`**. UBWC 2.0 config in use. Unrelated background crashes seen on every recent boot
+  (driverkitd jetsam kill; occasional sig10 of a random daemon, here lsd). Next: Phase 3, metal2vulkan +
+  the Metal plug-in bundle (sweetmtl), then presentation (2.4) for CoreAnimation.
