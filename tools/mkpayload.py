@@ -32,7 +32,10 @@ ios-flame's tools/mkpayload.py (MIT).
 
 --run adds PROGRAM (a signed iOS Mach-O, e.g. from the "phone" workflow) as
 /chosen "sweetrun" + "sweetrun-name": phone/sweetrun, installed once on the
-root, runs it at boot with its output on the console.
+root, runs it at boot with its output on the console. IOKit hands a property
+to userland only up to 16 MB (24-bit length in OSSerializeBinary), so a bigger
+PROGRAM goes in as "bigrun-0", "bigrun-1", ... (8 MB each) + "bigrun-name",
+with the phone/bigrun stub (--bigrun STUB) as the program sweetrun runs.
 
 --compress writes "SWEETZ01" + u64 size + raw DEFLATE of the payload, which
 shim/loader.c unpacks (shim/inflate.c): ABL only loads a ramdisk of about
@@ -163,16 +166,31 @@ def add_gpufw_to_adt(adt_blob, fw_dir):
     return adt.serialize(root), found
 
 
-def add_run_to_adt(adt_blob, prog_path):
-    """Return the ADT with /chosen sweetrun = the program, sweetrun-name = its file name."""
+BIGRUN_LIMIT = 15 << 20          # under IOKit's 16 MB serialization limit
+BIGRUN_PART = 8 << 20
+
+
+def add_run_to_adt(adt_blob, prog_path, stub_path=None):
+    """Return the ADT with /chosen sweetrun = the program (or the bigrun stub + bigrun-N parts)."""
     root, _ = adt.parse(adt_blob)
     chosen = next(c for c in root.children if c.name == 'chosen')
-    chosen.props = [p for p in chosen.props if p[0] not in ('sweetrun', 'sweetrun-name')]
+    chosen.props = [p for p in chosen.props if not p[0].startswith(('sweetrun', 'bigrun'))]
     data = open(prog_path, 'rb').read()
     if data[:4] != bytes.fromhex('cffaedfe'):
         raise SystemExit(f'error: {prog_path} is not a 64-bit Mach-O')
-    chosen.props.append(('sweetrun', 0, data))
-    chosen.props.append(('sweetrun-name', 0, os.path.basename(prog_path).encode()))
+    name = os.path.basename(prog_path).encode()
+    if len(data) > BIGRUN_LIMIT:
+        if not stub_path:
+            raise SystemExit(f'error: {prog_path} is {len(data)} bytes: over 15 MB needs --bigrun STUB')
+        stub = open(stub_path, 'rb').read()
+        chosen.props.append(('sweetrun', 0, stub))
+        chosen.props.append(('sweetrun-name', 0, b'bigrun'))
+        chosen.props.append(('bigrun-name', 0, name))
+        for i in range(0, len(data), BIGRUN_PART):
+            chosen.props.append((f'bigrun-{i // BIGRUN_PART}', 0, data[i:i + BIGRUN_PART]))
+    else:
+        chosen.props.append(('sweetrun', 0, data))
+        chosen.props.append(('sweetrun-name', 0, name))
     return adt.serialize(root)
 
 
@@ -184,7 +202,7 @@ def adt_dram(adt_blob):
             struct.unpack('<Q', chosen.prop('dram-size'))[0])
 
 
-def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None, run_path=None):
+def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None, run_path=None, stub_path=None):
     buf = bytearray(open(kernel_path, 'rb').read())
     m = parse_macho(buf)
     nfix = apply_chained_fixups(buf, m)
@@ -202,7 +220,7 @@ def build(kernel_path, adt_path, cmdline, ramdisk_path=None, gpufw_dir=None, run
     if gpufw_dir:
         adt_blob, gpufw = add_gpufw_to_adt(adt_blob, gpufw_dir)
     if run_path:
-        adt_blob = add_run_to_adt(adt_blob, run_path)
+        adt_blob = add_run_to_adt(adt_blob, run_path, stub_path)
     # The ADT decides where the kernel's RAM is (mkadt.py --highmem).
     PHYS_BASE, MEM_SIZE = adt_dram(adt_blob)
     pieces = [(s['vmaddr'], s['vmsize'], buf[s['fileoff']:s['fileoff'] + s['filesize']]) for s in segs]
@@ -250,9 +268,10 @@ if __name__ == '__main__':
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     ap.add_argument('--gpufw', help='Adreno 630 firmware directory (/chosen/gpufw,*, bsd/dev/sweet_a630.c)')
     ap.add_argument('--run', help='program for phone/sweetrun to run at boot (/chosen/sweetrun)')
+    ap.add_argument('--bigrun', help='phone/bigrun stub, for --run programs over 15 MB')
     ap.add_argument('--compress', action='store_true', help='deflate the payload (shim/inflate.c unpacks it)')
     a = ap.parse_args()
-    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.gpufw, a.run)
+    blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.gpufw, a.run, a.bigrun)
     if a.compress:
         c = zlib.compressobj(9, zlib.DEFLATED, -15)
         z = c.compress(blob) + c.flush()

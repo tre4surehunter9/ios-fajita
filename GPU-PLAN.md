@@ -300,3 +300,9 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   else Device as before), then `mmu_disable_clean` cleans image + unpack area and turns MMU and caches off in one
   leaf asm sequence (no stack writes in between), so the loader and XNU's entry run as before. Falls back to the
   uncached path (screen line "UNZIP NC") if mmu_enable refuses.
+- **0100mz (2026-10-31): fast unpack works on the phone** (MMU path, quick; XNU booted), but `sweetrun: nothing to
+  run`: IOKit serializes a registry property's length in 24 bits (`kOSSerializeDataMask` 0x00FFFFFF,
+  OSSerializeBinary.h), so the 26.7 MB /chosen property never reached userland (3.3 MB vktest did). Fix without
+  root or kernel change: **phone/bigrun** stub; `mkpayload.py --run PROG --bigrun STUB` stores programs over
+  15 MB as /chosen `bigrun-0..N` (8 MB parts) + `bigrun-name` and makes the stub the program sweetrun runs; the
+  stub joins the parts, runs the program and returns its status.

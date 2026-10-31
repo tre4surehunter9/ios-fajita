@@ -33,6 +33,7 @@ jobs:
           CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK -O2 -Wall"
           mkdir -p out
           $CC -o out/sweetrun phone/sweetrun/sweetrun.c -framework IOKit -framework CoreFoundation
+          $CC -o out/bigrun phone/bigrun/bigrun.c -framework IOKit -framework CoreFoundation
           $CC -x c++ -std=c++17 -I phone/include -o out/gputest phone/gputest/gputest.cpp \
               -framework IOKit -framework CoreFoundation -lc++
           for f in out/*; do codesign -f -s - "$f"; done
