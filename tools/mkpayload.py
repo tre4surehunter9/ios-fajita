@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Pack an xnu kernel Mach-O + ADT into the payload the sweet shim boots.
 
-  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--gpufw DIR] [--run PROGRAM]
+  mkpayload.py KERNEL ADT OUT [--cmdline "..."] [--ramdisk IMAGE] [--gpufw DIR] [--run PROGRAM] [--compress]
 
 The kernel is linked as a PIE with LC_DYLD_CHAINED_FIXUPS. Nobody else
 (no kmutil, no iBoot) resolves those for us, and xnu only rebases static
@@ -33,8 +33,12 @@ ios-flame's tools/mkpayload.py (MIT).
 --run adds PROGRAM (a signed iOS Mach-O, e.g. from the "phone" workflow) as
 /chosen "sweetrun" + "sweetrun-name": phone/sweetrun, installed once on the
 root, runs it at boot with its output on the console.
+
+--compress writes "SWEETZ01" + u64 size + raw DEFLATE of the payload, which
+shim/loader.c unpacks (shim/inflate.c): ABL only loads a ramdisk of about
+20 MB, so big payloads must travel compressed.
 """
-import argparse, os, struct, sys
+import argparse, os, struct, sys, zlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adt  # noqa: E402
@@ -246,8 +250,14 @@ if __name__ == '__main__':
     ap.add_argument('--ramdisk', help='root image for md0 (boot with rd=md0)')
     ap.add_argument('--gpufw', help='Adreno 630 firmware directory (/chosen/gpufw,*, bsd/dev/sweet_a630.c)')
     ap.add_argument('--run', help='program for phone/sweetrun to run at boot (/chosen/sweetrun)')
+    ap.add_argument('--compress', action='store_true', help='deflate the payload (shim/inflate.c unpacks it)')
     a = ap.parse_args()
     blob, info = build(a.kernel, a.adt, a.cmdline, a.ramdisk, a.gpufw, a.run)
+    if a.compress:
+        c = zlib.compressobj(9, zlib.DEFLATED, -15)
+        z = c.compress(blob) + c.flush()
+        info['compressed'] = f'{len(blob)} -> {len(z) + 16}'
+        blob = b'SWEETZ01' + struct.pack('<Q', len(blob)) + z
     open(a.out, 'wb').write(blob)
     for k, v in info.items():
         if k != 'segs':

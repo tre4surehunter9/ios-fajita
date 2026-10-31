@@ -285,3 +285,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   default.metallib on the phone). Workflow **metal2**: Rust 1.98 aarch64-apple-ios (deployment 16.0), metal2vulkan
   720ef1ce + patches, llvm-as fixtures, the bridge static lib, Turnip from the latest turnip run. Last line
   "M2VTEST PASS".
+- **0100m (2026-10-31): the 44.7 MB m2vtest image never left ABL**, twice (stays on the fastboot splash, still
+  enumerates as fastboot; "Booting OKAY" notwithstanding): ABL places the ramdisk in a slot of about 20 MB (a
+  19.1 MiB payload booted, 41 MiB did not). Fix in the shim: **compressed payloads**. `tools/mkpayload.py
+  --compress` writes "SWEETZ01" + u64 size + raw DEFLATE; `shim/inflate.c` (own RFC 1951 decoder, verified
+  byte-identical on the real payloads and on stored/fixed/dynamic blocks) unpacks it in `loader.c` to 0xc8000000
+  (free low RAM above the GPU arena) with the I-cache on, then loads as before (uncompressed payloads unchanged).
+  vktest image 21.3 -> 10.2 MB, m2vtest image 44.7 -> 18.5 MB. The screen shows `UNZIP ... ms=` timing.

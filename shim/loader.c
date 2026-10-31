@@ -11,6 +11,7 @@
 #include "console.h"
 #include "fdt.h"
 #include "loader.h"
+#include "inflate.h"
 
 #define BOOT_LINE_LENGTH	608
 #define PAGE_16K		0x4000UL
@@ -76,6 +77,57 @@ static int magic_ok(const char *m)
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
+/*
+ * Compressed payloads (tools/mkpayload.py --compress): "SWEETZ01", u64 size,
+ * raw DEFLATE. ABL only takes a ramdisk of about 20 MB (a 41 MB payload kept
+ * it on its splash screen), so big payloads travel deflated and are unpacked
+ * to free low RAM above the GPU arena (nothing uses it before xnu; the copy
+ * is only needed until the segments and ADT are in place).
+ */
+#define UNPACK_PA		0xc8000000UL
+#define UNPACK_MAX		0x30000000UL	/* up to 0xf8000000 */
+
+static int zmagic_ok(const char *m)
+{
+	static const char want[] = "SWEETZ01";
+	for (int i = 0; i < 8; i++)
+		if (m[i] != want[i])
+			return 0;
+	return 1;
+}
+
+static uint64_t ticks(void)
+{
+	uint64_t t;
+	__asm__ volatile("isb; mrs %0, cntpct_el0" : "=r"(t));
+	return t;
+}
+
+/* Unpack in place of the ramdisk range; 0 or an error string. */
+static const char *unpack(uint64_t *rd_start, uint64_t *rd_end)
+{
+	uint64_t size = *(volatile const uint64_t *)(*rd_start + 8);
+	if (size == 0 || size > UNPACK_MAX || (*rd_start & 7))
+		return "bad compressed payload header";
+	if (*rd_end > UNPACK_PA && *rd_start < UNPACK_PA + size)
+		return "compressed ramdisk overlaps the unpack area";
+	con_hex2("UNZIP", "in=", *rd_end - *rd_start, "out=", size);
+	/* Instruction cache on for the decoder (data stays Device: MMU off); restored after. */
+	uint64_t sctlr;
+	__asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+	__asm__ volatile("ic iallu; dsb sy; msr sctlr_el1, %0; isb" :: "r"(sctlr | (1UL << 12)) : "memory");
+	uint64_t t0 = ticks();
+	int64_t got = inflate_raw((uint8_t *)UNPACK_PA, size, (const uint8_t *)(*rd_start + 16), *rd_end - *rd_start - 16);
+	uint64_t ms = (ticks() - t0) / 19200;
+	__asm__ volatile("msr sctlr_el1, %0; isb; ic iallu; dsb sy; isb" :: "r"(sctlr) : "memory");
+	con_hex2("UNZIP", "got=", (uint64_t)got, "ms=", ms);
+	if (got != (int64_t)size)
+		return "payload inflate failed";
+	*rd_start = UNPACK_PA;
+	*rd_end = UNPACK_PA + size;
+	return 0;
+}
+
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;
@@ -84,6 +136,12 @@ const char *loader_boot(uintptr_t dtb)
 	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
 		return "no initrd in /chosen";
 	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+
+	if (zmagic_ok((const char *)rd_start)) {
+		const char *why = unpack(&rd_start, &rd_end);
+		if (why)
+			return why;
+	}
 
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))

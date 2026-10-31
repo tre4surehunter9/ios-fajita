@@ -19,7 +19,7 @@ fajita)	OUT=out-fajita; BOARDDEF=-DBOARD_FAJITA
 *)	echo "error: unknown BOARD=$BOARD" >&2; exit 1 ;;
 esac
 mkdir -p $OUT
-for f in start.S shim.c console.c mmu.c fdt.c loader.c ufs.c gpuprobe.c; do
+for f in start.S shim.c console.c mmu.c fdt.c loader.c inflate.c ufs.c gpuprobe.c; do
 	$CC $CFLAGS $BOARDDEF -c $f -o $OUT/${f%.*}.o
 done
 # GPU probe builds embed the GMU firmware (research/gpu/fw, never in git).
@@ -30,10 +30,10 @@ if [ -n "${GPUPROBE:-}" ]; then
 fi
 # The image runs wherever ABL puts it with no relocation pass: only the
 # header's image_size (start.o, linked at 0) may be an absolute address.
-abs=$(${CROSS}readelf -r $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/ufs.o $OUT/gpuprobe.o | grep -c ABS64 || true)
+abs=$(${CROSS}readelf -r $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/inflate.o $OUT/ufs.o $OUT/gpuprobe.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
 $CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
-	$OUT/start.o $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/ufs.o $OUT/gpuprobe.o $GPUFW_OBJ -o $OUT/shim.elf
+	$OUT/start.o $OUT/shim.o $OUT/console.o $OUT/mmu.o $OUT/fdt.o $OUT/loader.o $OUT/inflate.o $OUT/ufs.o $OUT/gpuprobe.o $GPUFW_OBJ -o $OUT/shim.elf
 $OBJCOPY -O binary $OUT/shim.elf $OUT/Image
 # ABL copies the file; pad to image_size so .bss/stacks exist as zeroed bytes.
 size=$(${CROSS}nm $OUT/shim.elf | awk '$3=="_end"{print strtonum("0x"$1)}')
