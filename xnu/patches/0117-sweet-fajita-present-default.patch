@@ -1,0 +1,37 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index fc5a2a5..1b0d349 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -138,6 +138,7 @@ sweet_mdp_dump(void)
+ #define MDP_CTL0		0x1000u
+ 
+ static bool sweet_flip_on;
++static int sweet_fb_gpu_surfaces(void);
+ static uintptr_t sweet_flip_va[2];
+ static uint64_t sweet_flip_pa[2];
+ static unsigned sweet_flip_next, sweet_flip_logged;
+@@ -145,9 +146,10 @@ static unsigned sweet_flip_next, sweet_flip_logged;
+ static void
+ sweet_flip_init(uint64_t splash, uint32_t height)
+ {
+-	uint32_t on = 0;
++	uint32_t on = 1;			/* 0117: default on with GPU surfaces (sweetfb_flip=0: off) */
+ 	vm_offset_t mdp;
+-	if (!PE_parse_boot_argn("sweetfb_flip", &on, sizeof(on)) || !on || (mdp = sweet_mdp_map()) == 0) {
++	PE_parse_boot_argn("sweetfb_flip", &on, sizeof(on));
++	if (!on || !sweet_fb_gpu_surfaces() || (mdp = sweet_mdp_map()) == 0) {
+ 		return;
+ 	}
+ 	uint32_t addr = *(volatile uint32_t *)(mdp + MDP_VIG0 + 0x14);
+@@ -192,8 +194,9 @@ static uint64_t sweet_present_pages[PRESENT_SLOT / 4096];
+ static void
+ sweet_gpublit_init(void)
+ {
+-	uint32_t on = 0;
+-	if (sweet_flip_on && PE_parse_boot_argn("sweetfb_gpublit", &on, sizeof(on)) && on) {
++	uint32_t on = 1;			/* 0117: default on (sweetfb_gpublit=0: CPU copy into the flip buffers) */
++	PE_parse_boot_argn("sweetfb_gpublit", &on, sizeof(on));
++	if (sweet_flip_on && on) {
+ 		sweet_gpublit_on = true;
+ 		sweet_fb_scaled = 1;
+ 		printf("SWEET FLIP: GPU present blit on (scaled to the panel)\n");

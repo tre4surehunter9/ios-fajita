@@ -501,3 +501,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   getPhysicalSegment), single full-screen layer only; 1125x2436 scaled onto 1080x2340 (Phase 5 fit). Touch
   follows (`sweet_fb_scaled`: x/1080, y/2340 instead of the centred crop). Any failure: path off for the boot
   (CPU copy, centred touch). The stats' "copy N us" becomes the blit's submit-to-fence time.
+- **0116 on the phone (2026-10-31): THE GPU PRESENT PATH WORKS.** `fastboot boot` started failing with "Load
+  Error" (even known-good images, even after reboot bootloader), so the user had it flashed to boot_a (Sailfish
+  boot kept at dtb/fajita/boot_a.img). No USB log on a normal power-on, but the screen shows it: edges visible
+  (scaled 1125x2436 -> 1080x2340, the Phase 5 fit), taps right at the edges, "looks great" (user). So the 2D
+  blit and the flips run and the CPU copy is gone.
+- **Kernel patch 0117 (2026-10-31): flip + GPU blit are the default** with GPU surfaces (sweetmtl=2);
+  `sweetfb_flip=0` / `sweetfb_gpublit=0` turn them off.
