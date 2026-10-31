@@ -12,6 +12,7 @@
 #include "fdt.h"
 #include "loader.h"
 #include "inflate.h"
+#include "mmu.h"
 
 #define BOOT_LINE_LENGTH	608
 #define PAGE_16K		0x4000UL
@@ -112,15 +113,27 @@ static const char *unpack(uint64_t *rd_start, uint64_t *rd_end)
 	if (*rd_end > UNPACK_PA && *rd_start < UNPACK_PA + size)
 		return "compressed ramdisk overlaps the unpack area";
 	con_hex2("UNZIP", "in=", *rd_end - *rd_start, "out=", size);
-	/* Instruction cache on for the decoder (data stays Device: MMU off); restored after. */
+	/*
+	 * With the MMU on, the shim image and the unpack area cacheable (mmu.c;
+	 * the area is free RAM in whole 32 MB blocks), the rest Device as before:
+	 * byte-wise output with the caches off took minutes for 20 MB. Without
+	 * the MMU (mmu_enable refused), only the I-cache is turned on.
+	 */
+	static struct mmu_info mi;
 	uint64_t sctlr;
 	__asm__ volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
-	__asm__ volatile("ic iallu; dsb sy; msr sctlr_el1, %0; isb" :: "r"(sctlr | (1UL << 12)) : "memory");
+	dcache_civac_range(UNPACK_PA, UNPACK_PA + size);
+	int cached = mmu_enable(&mi) == 0 && mmu_map_wb(UNPACK_PA, size) == 0;
+	if (!cached)
+		__asm__ volatile("ic iallu; dsb sy; msr sctlr_el1, %0; isb" :: "r"(sctlr | (1UL << 12)) : "memory");
 	uint64_t t0 = ticks();
 	int64_t got = inflate_raw((uint8_t *)UNPACK_PA, size, (const uint8_t *)(*rd_start + 16), *rd_end - *rd_start - 16);
 	uint64_t ms = (ticks() - t0) / 19200;
-	__asm__ volatile("msr sctlr_el1, %0; isb; ic iallu; dsb sy; isb" :: "r"(sctlr) : "memory");
-	con_hex2("UNZIP", "got=", (uint64_t)got, "ms=", ms);
+	if (cached)
+		mmu_disable_clean(mi.img_lo, mi.img_hi - mi.img_lo, UNPACK_PA, size);
+	else
+		__asm__ volatile("msr sctlr_el1, %0; isb; ic iallu; dsb sy; isb" :: "r"(sctlr) : "memory");
+	con_hex2(cached ? "UNZIP" : "UNZIP NC", "got=", (uint64_t)got, "ms=", ms);
 	if (got != (int64_t)size)
 		return "payload inflate failed";
 	*rd_start = UNPACK_PA;

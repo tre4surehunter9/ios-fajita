@@ -66,6 +66,17 @@ static void dcache_inval_range(uintptr_t start, uintptr_t end)
 	__asm__ volatile("dsb sy" ::: "memory");
 }
 
+void dcache_civac_range(uint64_t start, uint64_t end)
+{
+	uint64_t line = 4UL << ((rsr("ctr_el0") >> 16) & 0xf);
+
+	for (uint64_t a = start & ~(line - 1); a < end; a += line)
+		__asm__ volatile("dc civac, %0" : : "r"(a) : "memory");
+	__asm__ volatile("dsb sy" ::: "memory");
+}
+
+static uint64_t *mmu_l2;
+
 static void zero_table(uint64_t *t)
 {
 	for (int i = 0; i < NENT; i++)
@@ -83,6 +94,7 @@ int mmu_enable(struct mmu_info *info)
 	info->img_lo = img_lo;
 	info->img_hi = img_hi;
 	info->ttbr = pool;
+	mmu_l2 = l2;
 	if (((img_hi - 1) >> BLK_SHIFT) - (img_lo >> BLK_SHIFT) > 1)
 		return -1;	/* only room for two L3 tables */
 
@@ -122,6 +134,52 @@ int mmu_enable(struct mmu_info *info)
 	__asm__ volatile("isb" ::: "memory");
 	info->sctlr_after = rsr("sctlr_el1");
 	return 0;
+}
+
+int mmu_map_wb(uint64_t pa, uint64_t size)
+{
+	if (mmu_l2 == 0 || (pa & (BLK_SIZE - 1)) || pa + size > (8UL << 30))
+		return -1;
+	for (uint64_t blk = pa >> BLK_SHIFT; blk <= (pa + size - 1) >> BLK_SHIFT; blk++)
+		mmu_l2[blk] = (blk << BLK_SHIFT) | WB_FLAGS | D_BLOCK;
+	__asm__ volatile("dsb sy; tlbi vmalle1; dsb nsh; isb" ::: "memory");
+	return 0;
+}
+
+/*
+ * One asm block from the first clean to SCTLR: nothing may land in the cache
+ * (no stack spill) between cleaning the image (stack included) and turning the
+ * caches off, or the stack would be stale in memory afterwards.
+ */
+void mmu_disable_clean(uint64_t a, uint64_t an, uint64_t b, uint64_t bn)
+{
+	uint64_t line = 4UL << ((rsr("ctr_el0") >> 16) & 0xf);
+	uint64_t sctlr = rsr("sctlr_el1") & ~(SCTLR_M | SCTLR_C | SCTLR_I);
+	uint64_t ae = a + an, be = b + bn;
+
+	a &= ~(line - 1);
+	b &= ~(line - 1);
+	__asm__ volatile(
+		"1:	cmp	%[a], %[ae]\n"
+		"	b.hs	2f\n"
+		"	dc	civac, %[a]\n"
+		"	add	%[a], %[a], %[line]\n"
+		"	b	1b\n"
+		"2:	cmp	%[b], %[be]\n"
+		"	b.hs	3f\n"
+		"	dc	civac, %[b]\n"
+		"	add	%[b], %[b], %[line]\n"
+		"	b	2b\n"
+		"3:	dsb	sy\n"
+		"	msr	sctlr_el1, %[sctlr]\n"
+		"	isb\n"
+		"	ic	iallu\n"
+		"	tlbi	vmalle1\n"
+		"	dsb	sy\n"
+		"	isb\n"
+		: [a] "+r"(a), [b] "+r"(b)
+		: [ae] "r"(ae), [be] "r"(be), [line] "r"(line), [sctlr] "r"(sctlr)
+		: "memory", "cc");
 }
 
 /* Translate a VA with AT S1E1R; returns PAR_EL1. */

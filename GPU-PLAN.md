@@ -115,8 +115,6 @@ Steps, each its own build and phone test:
   (backboardd first) and restarts backboardd so it picks up the device. The bundle then stays on the root.
 - **3.4 Milestone: the home screen composited by the GPU.** backboardd through Metal (MTL2 log lines,
   pipelines compiled on the phone, a photo), then SpringBoard (the unlock swipe needs it), then every process.
-- **Later (user, 2026-10-31):** speed up the shim's payload unpacking (MMU off = every byte uncached, minutes
-  for 20 MB): enable the MMU with the unpack area and the ramdisk cacheable, clean + disable before the jump.
 - **Afterwards (Phase 4):** frame rate and presentation (the GPU blit to the panel instead of the CPU copy,
   ios-flame 0095/0119), memory per process, apps.
 
@@ -297,3 +295,8 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **0100vz (2026-10-31): compressed payloads work.** ABL put the ramdisk at 0x83700000 (header says 0x81000000:
   ABL picks its own addresses); `UNZIP in=0x88A39F out=0x131DE50` (8.9 -> 20.0 MB), slow with the MMU off (a few
   minutes, later item) but correct: XNU booted from it and vktest gave the same VKTEST ALL PASS as uncompressed.
+- **Faster unpacking (2026-10-31, user moved it up):** the shim's loader now runs the decoder with the MMU on
+  (mmu.c: shim image write-back, the unpack area 0xc8000000+ as write-back 32 MB blocks of free RAM, everything
+  else Device as before), then `mmu_disable_clean` cleans image + unpack area and turns MMU and caches off in one
+  leaf asm sequence (no stack writes in between), so the loader and XNU's entry run as before. Falls back to the
+  uncached path (screen line "UNZIP NC") if mmu_enable refuses.
