@@ -121,6 +121,9 @@ Steps, each its own build and phone test:
   (0.96) in the same pass: nothing cut off, no 3.8 ms CPU copy. (2) Later, as an experiment: report the native
   1080x2340 (framebuffer + MobileGestalt main-screen-width/height/scale); iOS 16 layouts may not accept a
   non-iPhone size.
+- **When the GPU work ends (user, 2026-10-31): docs pass before anything else.** README.md (what fajita
+  does now, build/boot recipe), PORTING.md (GPU phases done, hardware facts: GMU/RPMh/PLL0/MDP, what is open),
+  GPU-PLAN.md condensed to a summary + patch list (0094..), then fast-forward main to the GPU milestone.
 - **After the GPU work (user, 2026-10-31): the wallpaper.** PosterBoard (iOS 16 wallpaper renderer) dies
   with SIGTRAP on start, on CPU- and GPU-rendered boots alike, so the wallpaper is black; root v5 does not
   change that. Needs its crash log symbolicated (tools/dsc-a2s.py).
