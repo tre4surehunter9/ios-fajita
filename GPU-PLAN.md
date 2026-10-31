@@ -420,3 +420,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   is on it, leave it. Otherwise: APPS ACTIVE votes `gfx.lvl` = the level's index and `mx.lvl` = its top
   (sweet_rpmh_arc_vote, fajita gfx/mx only), RCG to XO, PLL0 at **2 x f** (710 MHz: 1420 MHz, L 0x49 frac
   0xf555), RCG 0x101.
+- **0107 at 257 MHz, quiet (2026-10-31): user "way faster", but "a shit ton of artifacts"** (photo: pieces of
+  different moments mixed, a tear through a widget). Log: no GPU faults; swaps alternate surfaces 2/3, full
+  frame (a = b = 0,0 1125x2436). Cause: the swap returned at once and the vsync timer copied the latest surface
+  up to 33 ms later, while CoreAnimation was already redrawing (only the damage) into it.
+- **Kernel patch 0109 (written 2026-10-31): copy at swap time.** With sweetmtl=2 (boot-arg `sweetfb_sync=0`
+  restores the timer path), AppleCLCD::swap waits for every GPU fence submitted so far
+  (`sweet_gpu_wait_all_ns`, 100 ms cap), then copies before returning, under one mutex.

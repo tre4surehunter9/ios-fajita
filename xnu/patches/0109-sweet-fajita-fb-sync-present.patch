@@ -1,0 +1,86 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index 9dba39d..24dcb51 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -937,6 +937,7 @@ void sweet_gpu_window_free(uint64_t base);
+ int sweet_gpu_map_pages(uint64_t iova, const uint64_t *pages, uint32_t n);
+ int sweet_gpu_submit_ibs(const uint64_t *iova, const uint32_t *dwords, unsigned n, uint32_t *seq, bool *busy);
+ int sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns);
++int sweet_gpu_wait_all_ns(uint64_t timeout_ns);
+ uint64_t sweet_gpu_timestamp(void);
+ uint64_t sweet_gpu_faults(void);
+ 
+@@ -1221,6 +1222,16 @@ fence_reached(uint32_t seq)
+ 	return (int32_t)(rd(PV(P_SCRATCH) + FENCE_OFF) - seq) >= 0;
+ }
+ 
++/* Wait for everything submitted so far (SweetFramebuffer before it copies a GPU-rendered frame). */
++int
++sweet_gpu_wait_all_ns(uint64_t timeout_ns)
++{
++	if (!sweet_gpu_is_ready()) {
++		return 0;
++	}
++	return sweet_gpu_wait_ns(__atomic_load_n(&fence_seq, __ATOMIC_ACQUIRE), timeout_ns);
++}
++
+ /* Wait for a fence; a timeout here is only a timeout (clients poll with 0). */
+ int
+ sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns)
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index aaf75e4..12b1cb3 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -52,6 +52,7 @@ extern "C" int sweet_console_muted;     /* osfmk/console/serial_console.c */
+ #include <sys/proc.h>
+ 
+ extern "C" void flush_dcache64(addr64_t addr, unsigned count, int phys);
++extern "C" int sweet_gpu_wait_all_ns(uint64_t timeout_ns);
+ 
+ /* Read by bsd/dev/sweet_a630.c's 5-second stats line (Phase 4): presents and their CPU copy time. */
+ extern "C" {
+@@ -322,13 +323,43 @@ static uint64_t sweet_fb_swap_count;
+  * shows the latest frame every fFlushTicks ticks (boot-arg sweetfb_hz,
+  * default 10 Hz).
+  */
++/*
++ * sweetmtl=2: CoreAnimation renders into two IOSurfaces in turn and redraws
++ * only what changed, so a surface is reused as soon as the swap after it
++ * returns. Copying it later from the vsync timer read it while the GPU was
++ * already drawing the next frame into it (mixed frames, tears). So with GPU
++ * surfaces the swap itself waits for the GPU and copies before it returns,
++ * as a display that latches the frame at swap time (sweetfb_sync=0: the old
++ * timer path).
++ */
++static LCK_GRP_DECLARE(sweet_fb_grp, "sweet_fb");
++static LCK_MTX_DECLARE(sweet_fb_present_mtx, &sweet_fb_grp);
++
++static bool
++sweet_fb_sync(void)
++{
++	static int v = -1;
++	if (v < 0) {
++		uint32_t on = 1;
++		PE_parse_boot_argn("sweetfb_sync", &on, sizeof(on));
++		v = sweet_fb_gpu_surfaces() && on != 0;
++	}
++	return v;
++}
++
+ void
+ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	IOLockLock(fLock);
+ 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
+-	fDirty = true;
++	fDirty = !sweet_fb_sync();
+ 	IOLockUnlock(fLock);
++	if (sweet_fb_sync()) {
++		lck_mtx_lock(&sweet_fb_present_mtx);
++		sweet_gpu_wait_all_ns(100000000ULL);
++		present(rec);
++		lck_mtx_unlock(&sweet_fb_present_mtx);
++	}
+ 	if ((++sweet_fb_swap_count % 1000) == 0) {
+ 		IOLog("SWEET FB: %llu swaps\n", sweet_fb_swap_count);
+ 	}
