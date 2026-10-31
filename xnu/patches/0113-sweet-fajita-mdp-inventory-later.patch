@@ -1,0 +1,46 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 34c50c5..03449b4 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -85,19 +85,19 @@ sweet_mdp_dump(void)
+ 	};
+ 	for (unsigned i = 0; i < sizeof(pipes) / sizeof(pipes[0]); i++) {
+ 		uint32_t o = pipes[i].off;
+-		IOLog("SWEET MDP: %s src_size 0x%08x src_xy 0x%08x out_size 0x%08x out_xy 0x%08x addr 0x%08x "
++		printf("SWEET MDP: %s src_size 0x%08x src_xy 0x%08x out_size 0x%08x out_xy 0x%08x addr 0x%08x "
+ 		    "ystride 0x%08x format 0x%08x unpack 0x%08x\n", pipes[i].name, MDP_RD(o), MDP_RD(o + 0x08),
+ 		    MDP_RD(o + 0x0c), MDP_RD(o + 0x10), MDP_RD(o + 0x14), MDP_RD(o + 0x24), MDP_RD(o + 0x30),
+ 		    MDP_RD(o + 0x34));
+ 	}
+ 	for (unsigned i = 0; i < 5; i++) {
+ 		uint32_t o = 0x1000 + 0x200 * i;
+-		IOLog("SWEET MDP: ctl%u layer lm0 0x%08x lm1 0x%08x lm2 0x%08x lm5 0x%08x top 0x%08x flush 0x%08x\n", i,
++		printf("SWEET MDP: ctl%u layer lm0 0x%08x lm1 0x%08x lm2 0x%08x lm5 0x%08x top 0x%08x flush 0x%08x\n", i,
+ 		    MDP_RD(o), MDP_RD(o + 0x4), MDP_RD(o + 0x8), MDP_RD(o + 0x24), MDP_RD(o + 0x14), MDP_RD(o + 0x18));
+ 	}
+ 	for (unsigned i = 0; i < 4; i++) {
+ 		uint32_t o = 0x70000 + 0x800 * i;
+-		IOLog("SWEET MDP: pingpong%u tear_check 0x%08x autorefresh 0x%08x\n", i, MDP_RD(o), MDP_RD(o + 0x30));
++		printf("SWEET MDP: pingpong%u tear_check 0x%08x autorefresh 0x%08x\n", i, MDP_RD(o), MDP_RD(o + 0x30));
+ 	}
+ #undef MDP_RD
+ }
+@@ -278,7 +278,6 @@ AppleCLCD::start(IOService *provider)
+ 	registerService();
+ 	IOLog("SWEET FB: AppleCLCD %ux%u stride %u at 0x%llx, default surface %u, presented as %ux%u\n",
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+-	sweet_mdp_dump();
+ 	return true;
+ }
+ 
+@@ -288,6 +287,10 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 	AppleCLCD *fb = (AppleCLCD *)owner;
+ 	uint64_t now = mach_absolute_time();
+ 	uint64_t count = ++fb->fVsyncCount;
++	if (count == 20 * 1000000 / SWEET_FB_VSYNC_US) {
++		/* ~20 s in: the early-boot burst drops lines on the USB console. */
++		sweet_mdp_dump();
++	}
+ 	uint64_t values[6] = {
+ 		(uint32_t)count, (uint32_t)(count >> 32),
+ 		(uint32_t)now, (uint32_t)(now >> 32),

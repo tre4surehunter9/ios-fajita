@@ -454,3 +454,6 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   4352, then blit + scale into the panel; (B) the MDP scans the iOS surface directly (VIG pipe scaler): zero copy.
 - **Kernel patch 0112 (2026-10-31): read-only MDP inventory** at AppleCLCD start (fajita): all 8 SSPPs
   (size/xy/addr/ystride/format/unpack), CTL0-4 (layers/top/flush), PINGPONG0-3 (tear check, auto-refresh).
+- **0112 on the phone (2026-10-31):** booted fine (710 MHz), but no `SWEET MDP` (nor the AppleCLCD start) line
+  reached the USB log: the early-boot burst drops lines. **0113:** the inventory runs once ~20 s after start
+  from the vsync timer, via printf.
