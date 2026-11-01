@@ -1,0 +1,80 @@
+diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
+index 83a4fb8..24db4de 100644
+--- a/bsd/dev/sweet_cpufreq.c
++++ b/bsd/dev/sweet_cpufreq.c
+@@ -15,6 +15,13 @@
+  * - each CPU's measured clock: bound to the CPU, it times a chain of
+  *   dependent adds (one per cycle on the A55 and A75 cores) against
+  *   mach_absolute_time. No PMU: the hypervisor may trap it.
++ *
++ * 0119 on the phone: domain 0 at level 15 (1612 MHz of 1766), domain 1 at
++ * level 0 (825 MHz of 2649; 2707 is the single-core turbo row); the measured
++ * clocks matched exactly. 0120: at start each domain is set to its highest
++ * non-turbo level by writing PERF_STATE, as mainline's fast switch
++ * (qcom_cpufreq_hw_fast_switch; the OSM firmware does the voltage, LMh
++ * throttles). Boot-arg sweetcpufreq=1: report only, 0: nothing.
+  */
+ #include <sys/param.h>
+ #include <sys/systm.h>
+@@ -53,6 +60,34 @@ cf_rd(vm_offset_t base, uint32_t off)
+ 	return *(volatile uint32_t *)(base + off);
+ }
+ 
++/* Highest level before the table ends, skipping turbo rows (CORE_COUNT 1), as mainline's table. */
++static void
++cf_set_max(void)
++{
++	for (unsigned d = 0; d < CF_DOMAINS; d++) {
++		vm_offset_t b = ml_io_map((vm_offset_t)cf_pa[d], 0x1400);
++		if (b == 0) {
++			continue;
++		}
++		uint32_t prev = 0, best = 0, best_mhz = 0;
++		for (unsigned i = 0; i < CF_ROWS; i++) {
++			uint32_t v = cf_rd(b, CF_LUT + CF_ROW * i);
++			uint32_t mhz = (v >> 30) ? (192 * (v & 0xff)) / 10 : 300;
++			if (i > 0 && mhz == prev) {
++				break;
++			}
++			prev = mhz;
++			if (((v >> 16) & 7) != 1 && mhz > best_mhz) {
++				best = i;
++				best_mhz = mhz;
++			}
++		}
++		uint32_t was = cf_rd(b, CF_PERF_STATE);
++		*(volatile uint32_t *)(b + CF_PERF_STATE) = best;
++		printf("SWEET CPUFREQ: domain %u level %u -> %u (%u MHz)\n", d, was, best, best_mhz);
++	}
++}
++
+ static void
+ cf_tables(void)
+ {
+@@ -123,9 +158,14 @@ cf_measure(void)
+ 	(void)self;
+ }
+ 
++static uint32_t cf_mode = 2;		/* 2: set the top levels and report, 1: report only */
++
+ static void
+ cf_thread(void *arg __unused, wait_result_t wr __unused)
+ {
++	if (cf_mode >= 2) {
++		cf_set_max();
++	}
+ 	delay(25 * 1000000);
+ 	cf_tables();
+ 	cf_measure();
+@@ -138,9 +178,8 @@ cf_thread(void *arg __unused, wait_result_t wr __unused)
+ void
+ sweet_cpufreq_init(void)
+ {
+-	uint32_t on = 1;
+-	PE_parse_boot_argn("sweetcpufreq", &on, sizeof(on));
+-	if (!on || !sweet_board_is("oneplus,fajita")) {
++	PE_parse_boot_argn("sweetcpufreq", &cf_mode, sizeof(cf_mode));
++	if (!cf_mode || !sweet_board_is("oneplus,fajita")) {
+ 		return;
+ 	}
+ 	thread_t t;

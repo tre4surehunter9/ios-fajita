@@ -528,3 +528,9 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   qcom-cpufreq-hw.c qcom_soc_data: 0x17d43000 / 0x17d45800, LUT 0x110 + 32 i, PERF_STATE 0x920) and each CPU's
   measured clock (bound to it, a dependent add chain timed against mach_absolute_time; no PMU, the hypervisor may
   trap it). Boot-arg sweetcpufreq=0.
+- **0119 on the phone (2026-11-01): the big cores ran at their minimum.** Domain 0 (cpus 0-3) level 15 = 1612 MHz
+  (table 300..1766), domain 1 (cpus 4-7) **level 0 = 825 MHz** (table 825..2649, 2707 turbo); measured clocks
+  1612 / 825 MHz exactly.
+- **Kernel patch 0120 (2026-11-01): CPUs to their top non-turbo level at start** (PERF_STATE 0x920 = the
+  index, as mainline's fast switch; OSM does the voltage, LMh throttles): domain 0 -> 1766 MHz, domain 1 -> 2649
+  MHz. The 25/60 s report shows the measured result. `sweetcpufreq=1`: report only; `=0`: nothing.
