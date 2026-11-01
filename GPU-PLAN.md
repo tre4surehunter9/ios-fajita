@@ -633,3 +633,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   old store (com.apple.LaunchServices-4035-v2.csstore, 4 MB, in InternalDaemon/EBAC5B3C-...) deleted, ExtensionKit
   flag written. The reseed registered the extensions: CollectionsPoster, AegirPoster, PhotosPosterProvider,
   WeatherPoster, the widget extensions all exec for the first time.
+- **Wallpaper works (2026-11-01, user: everything fine).** PosterBoard 0 crashes on a second boot of plain 0124;
+  CalendarWidgetExtension's ~100 % was one ~60 s burst at start-up, not a spin (cause unmeasured).
+- **Siri voice extensions' crash loop:** SiriTTSSynthesizerAU, MacinTalkAUSP, KonaSynthesizer abort (uncaught
+  NSException) from PlugInKit +0x18d5c: "plugin has invalid sandbox or container: error %d path %s", because our
+  sandbox op 4 (container path) answers ENOENT. **Kernel patch 0125:** op 4 args { pid, pidversion, buffer, size,
+  flag }; a process asking about itself with its executable inside an .appex gets /private/var/mobile; everyone
+  else keeps ENOENT (`sweetsbappex=0`: nobody). Not booted yet.
