@@ -1,0 +1,133 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 1b0d349..b286459 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -21,7 +21,9 @@
+  *      vsyncs (halving each pixel) and keeps it black until on again;
+  *      the panel itself stays powered (AMOLED black pixels are off).
+  *   18 IsMainDisplay,
+- *   28 GetDotPitch, 72 Enable/DisableNotifications [func, refcon, type, 0]
++ *   28 GetDotPitch, 72 Enable/DisableNotifications [func, refcon, type, 0],
++ *   73 ChangeFrameInfo [3, item mask], 74 SupportedFrameInfo [index] ->
++ *      [item count] + 64-byte item name (0121, below)
+  * Everything else is accepted and logged once.
+  *
+  * SwapEnd copies the enabled layers' surfaces into the panel memory (no
+@@ -304,12 +306,31 @@ enum {
+ 	kSweetFBIsMainDisplay           = 18,
+ 	kSweetFBGetDotPitch             = 28,
+ 	kSweetFBNotifications           = 72,
++	kSweetFBChangeFrameInfo         = 73,
++	kSweetFBSupportedFrameInfo      = 74,
+ };
+ 
+ #define SWEET_FB_SWAP_REC_SIZE          0x46c
+ #define SWEET_FB_LAYERS                 4
+ #define SWEET_FB_NOTIFY_TYPES           8
+ #define SWEET_FB_NOTIFY_VSYNC           5
++/*
++ * 0121: frame info, iOS 16 CoreAnimation's frame clock. From IOMobileFramebuffer (20H392, shared cache):
++ * kern_SupportedFrameInfo is selector 74 [index] -> one scalar (item count) and a 64-byte C string (that
++ * item's name); the library asks index 0..count-1 and keeps the names, bit i of a notification = item i.
++ * kern_ChangeFrameInfo is selector 73 [3, mask]. Notification type 3 (the library's callback table:
++ * FrameInfoNotifyFunc) carries [mask (bit 31: values as 32-bit pairs), a value handed to the client, one
++ * 64-bit value per set bit] and becomes a {name: value} dictionary for the client; QuartzCore reads
++ * "Presentation_time". backboardd saw an item count of 0, never enabled any notification, and its
++ * CA::WindowServer::IOMFBServer thread waited for messages that never came (10-15 frames/s).
++ */
++#define SWEET_FB_NOTIFY_FRAMEINFO       3
++#define SWEET_FB_FRAMEINFO_ITEMS        3
++static const char *const sweet_fb_frameinfo_names[SWEET_FB_FRAMEINFO_ITEMS] = {
++	"Presentation_time",    /* bit 0: mach_absolute_time of this vblank */
++	"Issued_time",          /* bit 1: mach_absolute_time the last swap was handed over */
++	"totalVBLs",            /* bit 2: vblank count */
++};
+ #define SWEET_FB_VSYNC_US               16667
+ #define SWEET_FB_DOT_PITCH              458     /* ppi, as the iPhone X panel */
+ /*
+@@ -354,6 +375,8 @@ public:
+ 	IOLock       *fLock;            /* swaps and client list */
+ 	OSArray      *fClients;
+ 	uint32_t      fSwapID;
++	uint32_t      fLastSwapID;      /* last swap shown, for frame info (0121) */
++	uint64_t      fLastSwapTime;
+ 	bool          fConsolePaused;
+ 	uint8_t       fPending[SWEET_FB_SWAP_REC_SIZE];     /* latest swap, not yet shown */
+ 	bool          fDirty;
+@@ -380,6 +403,7 @@ public:
+ 	mach_port_t         fPort;
+ 	io_user_reference_t fFunc[SWEET_FB_NOTIFY_TYPES];
+ 	io_user_reference_t fRefcon[SWEET_FB_NOTIFY_TYPES];
++	uint32_t            fFrameInfoMask;     /* ChangeFrameInfo (0121) */
+ 
+ 	bool initWithTask(task_t owningTask, void *securityID, UInt32 type) APPLE_KEXT_OVERRIDE;
+ 	bool start(IOService *provider) APPLE_KEXT_OVERRIDE;
+@@ -476,6 +500,20 @@ AppleCLCD::vsyncFired(OSObject *owner, IOTimerEventSource *sender)
+ 		IOMobileFramebufferUserClient *client =
+ 		    (IOMobileFramebufferUserClient *)fb->fClients->getObject(i);
+ 		client->notify(SWEET_FB_NOTIFY_VSYNC, values, 6);
++		uint32_t mask = client->fFrameInfoMask & ((1u << SWEET_FB_FRAMEINFO_ITEMS) - 1);
++		if (mask) {
++			uint64_t fi[2 + SWEET_FB_FRAMEINFO_ITEMS];
++			uint32_t n = 0;
++			fi[n++] = mask;
++			fi[n++] = fb->fLastSwapID;
++			const uint64_t item[SWEET_FB_FRAMEINFO_ITEMS] = { now, fb->fLastSwapTime, count };
++			for (uint32_t b = 0; b < SWEET_FB_FRAMEINFO_ITEMS; b++) {
++				if (mask & (1u << b)) {
++					fi[n++] = item[b];
++				}
++			}
++			client->notify(SWEET_FB_NOTIFY_FRAMEINFO, fi, n);
++		}
+ 	}
+ 	if (fb->fPowerOff) {
+ 		/* Fade out: halve every channel each vsync, then black, then idle. */
+@@ -577,6 +615,8 @@ void
+ AppleCLCD::swap(const uint8_t *rec)
+ {
+ 	IOLockLock(fLock);
++	fLastSwapID = get32(rec, 0x50);
++	fLastSwapTime = mach_absolute_time();
+ 	memcpy(fPending, rec, SWEET_FB_SWAP_REC_SIZE);
+ 	fDirty = !sweet_fb_sync();
+ 	IOLockUnlock(fLock);
+@@ -873,6 +913,7 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 	IOReturn ret = kIOReturnSuccess;
+ 	uint64_t out[2] = { 0, 0 };
+ 	uint32_t outCount = 0;
++	const char *frameInfoName = NULL;
+ 
+ 	switch (selector) {
+ 	case kSweetFBGetLayerDefaultSurface:
+@@ -913,6 +954,20 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 		out[0] = SWEET_FB_DOT_PITCH;
+ 		outCount = 1;
+ 		break;
++	case kSweetFBChangeFrameInfo:
++		if (args->scalarInputCount >= 2) {
++			IOLockLock(fFB->fLock);
++			fFrameInfoMask = (uint32_t)args->scalarInput[1];
++			IOLockUnlock(fFB->fLock);
++		}
++		break;
++	case kSweetFBSupportedFrameInfo:
++		out[0] = SWEET_FB_FRAMEINFO_ITEMS;
++		outCount = 1;
++		if (args->scalarInputCount >= 1 && args->scalarInput[0] < SWEET_FB_FRAMEINFO_ITEMS) {
++			frameInfoName = sweet_fb_frameinfo_names[args->scalarInput[0]];
++		}
++		break;
+ 	case kSweetFBNotifications:
+ 		if (args->scalarInputCount >= 3 && args->scalarInput[2] < SWEET_FB_NOTIFY_TYPES) {
+ 			uint32_t type = (uint32_t)args->scalarInput[2];
+@@ -949,6 +1004,9 @@ IOMobileFramebufferUserClient::externalMethod(uint32_t selector, IOExternalMetho
+ 	}
+ 	if (args->structureOutputDescriptor == NULL && args->structureOutput != NULL) {
+ 		bzero(args->structureOutput, args->structureOutputSize);
++		if (frameInfoName != NULL && args->structureOutputSize > 0) {
++			strlcpy((char *)args->structureOutput, frameInfoName, args->structureOutputSize);
++		}
+ 	}
+ 	if (selector >= 64 || !(sweet_fb_logged & (1ULL << selector))) {
+ 		if (selector < 64) {

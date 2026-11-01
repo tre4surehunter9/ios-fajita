@@ -534,3 +534,16 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **Kernel patch 0120 (2026-11-01): CPUs to their top non-turbo level at start** (PERF_STATE 0x920 = the
   index, as mainline's fast switch; OSM does the voltage, LMh throttles): domain 0 -> 1766 MHz, domain 1 -> 2649
   MHz. The 25/60 s report shows the measured result. `sweetcpufreq=1`: report only; `=0`: nothing.
+- **0120 on the phone (2026-11-01): CPUs at full clock** (domain 0 1766 MHz, domain 1 2649 MHz measured), but user
+  "a little better but not much": still 10-15.6 presents/s, idle animation exactly 10.0/s, GPU busy 1-23 %.
+- **Why (IOMobileFramebuffer reverse-engineered from the 20H392 shared cache, work/tmp/scripts):** backboardd
+  never calls EnableNotifications (72, our vsync); it calls SupportedFrameInfo (74) and got item count 0. iOS 16
+  CoreAnimation's frame clock is IOMFB **frame info**: selector 74 [index] -> [count] + 64-byte item name (the
+  library builds a name table, bit i = item i); 73 ChangeFrameInfo [3, mask]; notification type 3
+  (FrameInfoNotifyFunc) = [mask, value for the client, one 64-bit value per bit] -> {name: value}; QuartzCore reads
+  "Presentation_time"; IOMFB knows "Presentation_time", "Issued_time", "totalVBLs". Sampler: backboardd's
+  CA::WindowServer::IOMFBServer thread waits on its port for these. Selector map: SwapBegin 4, SwapEnd 5,
+  SwapWait(+Timeout) 6, SetParameter 68, SetBlock 78, GetBlock 79, SupportedFrameInfo 74, ChangeFrameInfo 73.
+- **Kernel patch 0121 (2026-11-01): frame info.** 74 answers 3 items (Presentation_time, Issued_time, totalVBLs);
+  73 stores the client's mask; each 60 Hz vsync tick sends type 3 [mask, last swap id, now, last swap time,
+  vblank count (per mask)].
