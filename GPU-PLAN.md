@@ -667,3 +667,12 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   allocation -> page faults, zero fill, TLB shootdowns. Idle: ~9.5 presents/s with nothing moving (backboardd ~21 %), cause
   unknown.
 - **Kernel patch 0128:** `TOPX name[pid]: cpu kernel%, per s: faults cow syscalls switches` for the 3 busiest each window.
+- **0128 results (2026-11-01):** scrolling, backboardd 86-96 %, kernel 16-38 % (mostly ~17 %), ~1000 faults/s, ~7000 syscalls/s,
+  ~2100 switches/s, 13-18 presents/s: mostly user-mode work, so the fault hypothesis was mostly wrong.
+- **[UniXNU/AdrenoMetal](https://github.com/UniXNU/AdrenoMetal) (MIT): same stack (metal2vulkan + Turnip), with measured
+  performance work we lack.** Our frontend is 1758 lines with 8 bridge patches; theirs is ~318 KB with 24 + Droid-VM's
+  draw-path patches 0025-0037. Candidates: 01bfb259 hold surface imports for a second (CoreAnimation makes a texture of each
+  surface per frame: allocate, map, free every frame); b59dbd0d + a579f1f5 one encoding thread fed in batches (a dispatch
+  queue woke a pool thread per call; 16 % fewer frames on 60 % more CPU in GFXBench); 34abea7a draw-path patches; bridge patch
+  0006 batched barriers + key-hashed maps. Their numbers are from GFXBench/other OSes (iPadOS 27), not this phone.
+  mimalloc was tried there and backed out on iPadOS 27.
