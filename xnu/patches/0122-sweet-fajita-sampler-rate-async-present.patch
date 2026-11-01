@@ -89,7 +89,7 @@ index b40eccd..87f34ba 100644
  }
  
 diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
-index b286459..a78f36b 100644
+index b286459..0833a86 100644
 --- a/iokit/Kernel/arm/SweetFramebuffer.cpp
 +++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
 @@ -63,7 +63,9 @@ extern "C" int sweet_gpu_map(uint64_t iova, uint64_t pa, uint64_t size);
@@ -103,7 +103,7 @@ index b286459..a78f36b 100644
  extern "C" { int sweet_fb_scaled; }     /* read by SweetHID.cpp's touch mapping */
  
  /*
-@@ -140,6 +142,13 @@ sweet_mdp_dump(void)
+@@ -140,6 +142,14 @@ sweet_mdp_dump(void)
  #define MDP_CTL0		0x1000u
  
  static bool sweet_flip_on;
@@ -114,10 +114,11 @@ index b286459..a78f36b 100644
 +static int sweet_async_pending = -1;		/* blit queued, flip not latched yet */
 +static uint32_t sweet_async_seq;
 +static unsigned sweet_async_logged;
++static void sweet_async_init(void);
  static int sweet_fb_gpu_surfaces(void);
  static uintptr_t sweet_flip_va[2];
  static uint64_t sweet_flip_pa[2];
-@@ -389,7 +398,7 @@ public:
+@@ -389,7 +399,7 @@ public:
  	void removeClient(IOMobileFramebufferUserClient *client);
  	void swap(const uint8_t *rec);
  	void present(const uint8_t *rec);
@@ -126,7 +127,7 @@ index b286459..a78f36b 100644
  };
  
  OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
-@@ -476,6 +485,7 @@ AppleCLCD::start(IOService *provider)
+@@ -476,6 +486,7 @@ AppleCLCD::start(IOService *provider)
  	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
  	sweet_flip_init(fPhys, fHeight);
  	sweet_gpublit_init();
@@ -134,7 +135,7 @@ index b286459..a78f36b 100644
  	return true;
  }
  
-@@ -622,6 +632,26 @@ AppleCLCD::swap(const uint8_t *rec)
+@@ -622,6 +633,26 @@ AppleCLCD::swap(const uint8_t *rec)
  	IOLockUnlock(fLock);
  	if (sweet_fb_sync()) {
  		lck_mtx_lock(&sweet_fb_present_mtx);
@@ -161,7 +162,7 @@ index b286459..a78f36b 100644
  		if (sweet_flip_on) {
  			unsigned b = sweet_flip_next;
  			if (!sweet_gpublit_on || !gpuPresent(rec, b)) {
-@@ -646,6 +676,11 @@ AppleCLCD::swap(const uint8_t *rec)
+@@ -646,6 +677,11 @@ AppleCLCD::swap(const uint8_t *rec)
  				present(rec);
  			} else {
  				sweet_flip_next = b ^ 1u;
@@ -173,7 +174,7 @@ index b286459..a78f36b 100644
  			}
  		} else {
  			sweet_gpu_wait_all_ns(100000000ULL);
-@@ -759,9 +794,62 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -759,9 +795,62 @@ AppleCLCD::present(const uint8_t *rec)
  	}
  }
  
@@ -237,7 +238,7 @@ index b286459..a78f36b 100644
  {
  	uint32_t mask = get32(rec, 0x104), layer = SWEET_FB_LAYERS;
  	for (uint32_t l = 0; l < SWEET_FB_LAYERS; l++) {
-@@ -818,12 +906,13 @@ AppleCLCD::gpuPresent(const uint8_t *rec, unsigned buffer)
+@@ -818,12 +907,13 @@ AppleCLCD::gpuPresent(const uint8_t *rec, unsigned buffer)
  	uint64_t ns = 0;
  	int rc = (src == 0 || sw <= 0 || sh <= 0 || pw == 0 || ph == 0) ? -2 :
  	    sweet_gpu_present_blit(src + s->offset, s->width, s->height, s->bytesPerRow, (uint32_t)sx, (uint32_t)sy,
