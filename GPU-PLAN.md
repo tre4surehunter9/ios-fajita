@@ -575,3 +575,9 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   (Bluetooth), com.apple.voicemail.vmd (+ the CommCenter jobs sweet-root-tweaks removes: cellular),
   com.apple.fairplayd.H2 (FairPlay), com.apple.ReportCrash (crash reports). The original job list is on the phone
   as /System/Library/xpc/launchd.plist.pre-quiet.
+- **0123 after quiet (2026-11-01):** vmd and the crash loops gone, but **launchd ~72 %** (was ~28 %) and
+  **mediaserverd ~47 %** (new), ~150 % total idle (was ~160 %). Samples (launchd, mediaserverd every 0.5 s):
+  mediaserverd's threads sit in system calls, among them `_xpc_pipe_mach_msg` (requests to launchd), launchd's
+  main thread busy: most likely mediaserverd asking launchd for the removed Bluetooth service again and again.
+  **phone/unquiet:** puts com.apple.bluetoothd back from launchd.plist.pre-quiet (vmd, fairplayd.H2, ReportCrash
+  stay off, as ios-apollo).

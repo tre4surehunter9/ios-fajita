@@ -35,6 +35,7 @@ jobs:
           $CC -o out/sweetrun phone/sweetrun/sweetrun.c -framework IOKit -framework CoreFoundation
           $CC -o out/bigrun phone/bigrun/bigrun.c -framework IOKit -framework CoreFoundation
           $CC -o out/quiet phone/quiet/quiet.c -framework CoreFoundation
+          $CC -o out/unquiet phone/unquiet/unquiet.c -framework CoreFoundation
           $CC -x c++ -std=c++17 -I phone/include -o out/gputest phone/gputest/gputest.cpp \
               -framework IOKit -framework CoreFoundation -lc++
           for f in out/*; do codesign -f -s - "$f"; done
