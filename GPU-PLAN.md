@@ -563,3 +563,11 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   per-process "top" (vmd, coreduetd, crash loops). Ours: bluetoothd and fairplayd.H2 restart every ~10 s.
 - **Kernel patch 0123 (2026-11-01):** non-blocking present is the default (`sweetfb_async=0` off); **"TOP 10s"**
   line every `sweettop` s (default 10): CPU per process over the window, % of one core (fill_taskprocinfo).
+- **0123 on the phone (2026-11-01, flashed to boot_a + continue; `fastboot boot` gave Load Error again).**
+  TOP per 10 s: **vmd ~95-100 % always** (= com.apple.voicemail.vmd, no modem; ios-apollo found the same),
+  **backboardd 86-108 % during use** (17-37 % idle), SpringBoard 30-64 % in use, **launchd ~26-30 % always**
+  (bluetoothd + fairplayd.H2 crash loops every ~10 s), ReportCrash ~18 % early.
+- **phone/quiet (2026-11-01, user chose the on-device fix):** run once through sweetrun, removes
+  com.apple.voicemail.vmd, com.apple.fairplayd.H2, com.apple.bluetoothd, com.apple.ReportCrash (labels checked in
+  20H392's launchd.plist) from /System/Library/xpc/launchd.plist, same format/owner/mode, original kept as
+  launchd.plist.pre-quiet; effective after the next boot. Built by the "phone" workflow.
