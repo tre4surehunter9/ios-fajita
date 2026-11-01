@@ -571,3 +571,7 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   com.apple.voicemail.vmd, com.apple.fairplayd.H2, com.apple.bluetoothd, com.apple.ReportCrash (labels checked in
   20H392's launchd.plist) from /System/Library/xpc/launchd.plist, same format/owner/mode, original kept as
   launchd.plist.pre-quiet; effective after the next boot. Built by the "phone" workflow.
+- **To re-enable later (user, 2026-11-01):** quiet's removals must come back with their features: com.apple.bluetoothd
+  (Bluetooth), com.apple.voicemail.vmd (+ the CommCenter jobs sweet-root-tweaks removes: cellular),
+  com.apple.fairplayd.H2 (FairPlay), com.apple.ReportCrash (crash reports). The original job list is on the phone
+  as /System/Library/xpc/launchd.plist.pre-quiet.
