@@ -1,0 +1,256 @@
+diff --git a/bsd/dev/sweet_a630.c b/bsd/dev/sweet_a630.c
+index fd82072..9bc9cad 100644
+--- a/bsd/dev/sweet_a630.c
++++ b/bsd/dev/sweet_a630.c
+@@ -943,7 +943,7 @@ int sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns);
+ int sweet_gpu_wait_all_ns(uint64_t timeout_ns);
+ int sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch,
+     uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh, uint64_t dst, uint32_t dst_pitch,
+-    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns);
++    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns, uint32_t *seq_out);
+ uint64_t sweet_gpu_timestamp(void);
+ uint64_t sweet_gpu_faults(void);
+ 
+@@ -1258,10 +1258,15 @@ pkt4(uint32_t reg, uint32_t cnt)
+ static uint64_t present_ib_pa;
+ static vm_offset_t present_ib_kva;
+ 
++/* 0122: seq_out set = submit only (the caller waits on *seq_out); IBs rotate over 8 slots of 512 bytes. */
++#define PRESENT_IB_SLOT		512u
++#define PRESENT_IB_SLOTS	8u
++static unsigned present_ib_next;
++
+ int
+ sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch,
+     uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh, uint64_t dst, uint32_t dst_pitch,
+-    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns)
++    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns, uint32_t *seq_out)
+ {
+ 	if (!sweet_gpu_is_ready() || (src & 15) || (dst & 63) || (src_pitch & 63) || (dst_pitch & 63) ||
+ 	    !sw || !sh || !dw || !dh || src_w > 16384 || src_h > 16384 || dx + dw > 16384 || dy + dh > 16384) {
+@@ -1331,15 +1336,21 @@ sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t sr
+ 	d[n++] = (uint32_t)(ts >> 32);
+ 	d[n++] = 1;
+ 	d[n++] = pkt7(CP_WAIT_FOR_IDLE, 0);
++	unsigned slot = present_ib_next++ % PRESENT_IB_SLOTS;
++	vm_offset_t ib = present_ib_kva + PRESENT_IB_SLOT * slot;
+ 	for (uint32_t i = 0; i < n; i++) {
+-		wr(present_ib_kva + 4 * i, d[i]);
++		wr(ib + 4 * i, d[i]);
+ 	}
+ 	__asm__ volatile ("dsb sy" ::: "memory");
+ 	uint64_t t0 = mach_absolute_time(), ns;
+ 	uint32_t seq;
+-	if (sweet_gpu_submit(VA_PRESENT_IB, n, &seq)) {
++	if (sweet_gpu_submit(VA_PRESENT_IB + PRESENT_IB_SLOT * slot, n, &seq)) {
+ 		return -1;
+ 	}
++	if (seq_out) {
++		*seq_out = seq;
++		return 0;
++	}
+ 	int rc = sweet_gpu_wait_ns(seq, 100000000ULL);
+ 	absolutetime_to_nanoseconds(mach_absolute_time() - t0, &ns);
+ 	if (gpu_ns) {
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index b40eccd..87f34ba 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -11,6 +11,8 @@
+  * syscall stub in pc and its caller in lr/bt.
+  *
+  * First sample 90 s after start, then every 120 s, 40 samples at most.
++ * 0122, for profiling a frame loop: boot-args sweetsample_delay (s),
++ * sweetsample_ms (interval) and sweetsample_n (samples, at most 2000).
+  */
+ #include <sys/param.h>
+ #include <sys/systm.h>
+@@ -70,11 +72,18 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+ 	if (sweet_sample_names[0] == '-') {
+ 		return;
+ 	}
+-	(void)tsleep(&chan, PZERO, "sweetsmp", 90 * hz);
+-	for (int i = 0; i < 40; i++) {
+-		printf("SMP --- sample %d\n", i);
++	uint32_t delay_s = 90, interval_ms = 120000, count = 40;
++	PE_parse_boot_argn("sweetsample_delay", &delay_s, sizeof(delay_s));
++	PE_parse_boot_argn("sweetsample_ms", &interval_ms, sizeof(interval_ms));
++	PE_parse_boot_argn("sweetsample_n", &count, sizeof(count));
++	count = count > 2000 ? 2000 : count;
++	int ticks = (int)(((uint64_t)interval_ms * (uint64_t)hz + 999) / 1000);
++	ticks = ticks < 1 ? 1 : ticks;
++	(void)tsleep(&chan, PZERO, "sweetsmp", (int)delay_s * hz);
++	for (uint32_t i = 0; i < count; i++) {
++		printf("SMP --- sample %u\n", i);
+ 		proc_iterate(PROC_ALLPROCLIST, sweet_sample_proc, NULL, NULL, NULL);
+-		(void)tsleep(&chan, PZERO, "sweetsmp", 120 * hz);
++		(void)tsleep(&chan, PZERO, "sweetsmp", ticks);
+ 	}
+ }
+ 
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index b286459..a78f36b 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -63,7 +63,9 @@ extern "C" int sweet_gpu_map(uint64_t iova, uint64_t pa, uint64_t size);
+ extern "C" int sweet_gpu_map_pages(uint64_t iova, const uint64_t *pages, uint32_t n);
+ extern "C" int sweet_gpu_present_blit(uint64_t src, uint32_t src_w, uint32_t src_h, uint32_t src_pitch,
+     uint32_t sx, uint32_t sy, uint32_t sw, uint32_t sh, uint64_t dst, uint32_t dst_pitch,
+-    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns);
++    uint32_t dx, uint32_t dy, uint32_t dw, uint32_t dh, uint64_t *gpu_ns, uint32_t *seq_out);
++extern "C" int sweet_gpu_wait_ns(uint32_t seq, uint64_t timeout_ns);
++extern "C" kern_return_t kernel_thread_start(thread_continue_t continuation, void *parameter, thread_t *new_thread);
+ extern "C" { int sweet_fb_scaled; }     /* read by SweetHID.cpp's touch mapping */
+ 
+ /*
+@@ -140,6 +142,13 @@ sweet_mdp_dump(void)
+ #define MDP_CTL0		0x1000u
+ 
+ static bool sweet_flip_on;
++/* 0122 non-blocking present state (sweet_async_worker below). */
++static bool sweet_async_on;
++static IOLock *sweet_async_lock;
++static int sweet_async_screen = -1;		/* flip buffer on screen, -1 = the splash buffer */
++static int sweet_async_pending = -1;		/* blit queued, flip not latched yet */
++static uint32_t sweet_async_seq;
++static unsigned sweet_async_logged;
+ static int sweet_fb_gpu_surfaces(void);
+ static uintptr_t sweet_flip_va[2];
+ static uint64_t sweet_flip_pa[2];
+@@ -389,7 +398,7 @@ public:
+ 	void removeClient(IOMobileFramebufferUserClient *client);
+ 	void swap(const uint8_t *rec);
+ 	void present(const uint8_t *rec);
+-	bool gpuPresent(const uint8_t *rec, unsigned buffer);
++	bool gpuPresent(const uint8_t *rec, unsigned buffer, uint32_t *seq_out = NULL);
+ };
+ 
+ OSDefineMetaClassAndStructors(AppleCLCD, IOMobileFramebuffer);
+@@ -476,6 +485,7 @@ AppleCLCD::start(IOService *provider)
+ 	    fWidth, fHeight, fRowBytes, fPhys, fSurface->id, fLogicalW, fLogicalH);
+ 	sweet_flip_init(fPhys, fHeight);
+ 	sweet_gpublit_init();
++	sweet_async_init();
+ 	return true;
+ }
+ 
+@@ -622,6 +632,26 @@ AppleCLCD::swap(const uint8_t *rec)
+ 	IOLockUnlock(fLock);
+ 	if (sweet_fb_sync()) {
+ 		lck_mtx_lock(&sweet_fb_present_mtx);
++		if (sweet_async_on && sweet_gpublit_on) {
++			IOLockLock(sweet_async_lock);
++			while (sweet_async_pending >= 0) {
++				IOLockSleep(sweet_async_lock, &sweet_async_pending, THREAD_UNINT);
++			}
++			unsigned b = sweet_async_screen == 0 ? 1u : 0u;
++			IOLockUnlock(sweet_async_lock);
++			uint32_t seq = 0;
++			if (gpuPresent(rec, b, &seq)) {
++				IOLockLock(sweet_async_lock);
++				sweet_async_seq = seq;
++				sweet_async_pending = (int)b;
++				IOLockWakeup(sweet_async_lock, &sweet_async_pending, false);
++				IOLockUnlock(sweet_async_lock);
++				lck_mtx_unlock(&sweet_fb_present_mtx);
++				return;
++			}
++			/* Not a GPU frame (or the blit path just switched itself off): the blocking path below. */
++			sweet_flip_next = b;
++		}
+ 		if (sweet_flip_on) {
+ 			unsigned b = sweet_flip_next;
+ 			if (!sweet_gpublit_on || !gpuPresent(rec, b)) {
+@@ -646,6 +676,11 @@ AppleCLCD::swap(const uint8_t *rec)
+ 				present(rec);
+ 			} else {
+ 				sweet_flip_next = b ^ 1u;
++				if (sweet_async_on) {
++					IOLockLock(sweet_async_lock);
++					sweet_async_screen = (int)b;	/* the async path must not blit into it next */
++					IOLockUnlock(sweet_async_lock);
++				}
+ 			}
+ 		} else {
+ 			sweet_gpu_wait_all_ns(100000000ULL);
+@@ -759,9 +794,62 @@ AppleCLCD::present(const uint8_t *rec)
+ 	}
+ }
+ 
++/*
++ * 0122 non-blocking present (sweetfb_async=1, needs the GPU blit): the swap queues the blit into the buffer
++ * that is not on screen and returns; a worker thread waits for that blit's fence (woken by the GPU
++ * interrupt), flips VIG0 and waits for the latch. One flip may be pending: a swap that finds one waits for
++ * it, so the buffer it then blits into is never the one being scanned or flipped to. The source surface
++ * may go back to CoreAnimation before the blit has run: its next rendering into it is submitted later on
++ * the same ring, which the GPU executes in order.
++ */
++
++static void
++sweet_async_worker(void *arg __unused, wait_result_t wr __unused)
++{
++	for (;;) {
++		IOLockLock(sweet_async_lock);
++		while (sweet_async_pending < 0) {
++			IOLockSleep(sweet_async_lock, &sweet_async_pending, THREAD_UNINT);
++		}
++		int b = sweet_async_pending;
++		uint32_t seq = sweet_async_seq;
++		IOLockUnlock(sweet_async_lock);
++		int fence = sweet_gpu_wait_ns(seq, 100000000ULL);
++		uint32_t ms = 0;
++		int r = sweet_flip_to(sweet_flip_pa[b], FLIP_STRIDE, &ms);
++		if (sweet_async_logged < 6 || r < 0 || fence) {
++			sweet_async_logged++;
++			printf("SWEET FLIP: async buffer %d: fence %s, %s after %u ms\n", b, fence ? "TIMEOUT" : "ok",
++			    r == 0 ? "latched" : r == 1 ? "latched after CTL_START" : "NOT LATCHED", ms);
++		}
++		IOLockLock(sweet_async_lock);
++		sweet_async_screen = b;
++		sweet_async_pending = -1;
++		IOLockWakeup(sweet_async_lock, &sweet_async_pending, false);
++		IOLockUnlock(sweet_async_lock);
++	}
++}
++
++static void
++sweet_async_init(void)
++{
++	uint32_t on = 0;
++	if (!sweet_gpublit_on || !PE_parse_boot_argn("sweetfb_async", &on, sizeof(on)) || !on) {
++		return;
++	}
++	sweet_async_lock = IOLockAlloc();
++	thread_t t;
++	if (sweet_async_lock == NULL || kernel_thread_start(sweet_async_worker, NULL, &t) != KERN_SUCCESS) {
++		return;
++	}
++	thread_deallocate(t);
++	sweet_async_on = true;
++	printf("SWEET FLIP: non-blocking present on\n");
++}
++
+ /* One full-screen layer through the GPU present blit into flip buffer `buffer`; false: do the CPU copy. */
+ bool
+-AppleCLCD::gpuPresent(const uint8_t *rec, unsigned buffer)
++AppleCLCD::gpuPresent(const uint8_t *rec, unsigned buffer, uint32_t *seq_out)
+ {
+ 	uint32_t mask = get32(rec, 0x104), layer = SWEET_FB_LAYERS;
+ 	for (uint32_t l = 0; l < SWEET_FB_LAYERS; l++) {
+@@ -818,12 +906,13 @@ AppleCLCD::gpuPresent(const uint8_t *rec, unsigned buffer)
+ 	uint64_t ns = 0;
+ 	int rc = (src == 0 || sw <= 0 || sh <= 0 || pw == 0 || ph == 0) ? -2 :
+ 	    sweet_gpu_present_blit(src + s->offset, s->width, s->height, s->bytesPerRow, (uint32_t)sx, (uint32_t)sy,
+-	    (uint32_t)sw, (uint32_t)sh, PRESENT_DST_IOVA + FLIP_OFFSET * buffer, FLIP_STRIDE, px, py, pw, ph, &ns);
++	    (uint32_t)sw, (uint32_t)sh, PRESENT_DST_IOVA + FLIP_OFFSET * buffer, FLIP_STRIDE, px, py, pw, ph, &ns,
++	    seq_out);
+ 	if (sweet_gpublit_logged < 6 || rc) {
+ 		sweet_gpublit_logged++;
+ 		printf("SWEET FLIP: GPU blit surface %u %dx%d+%d+%d -> panel %ux%u+%u+%u into buffer %u: %s, %llu us\n",
+-		    s->id, sw, sh, sx, sy, pw, ph, px, py, buffer, rc == 0 ? "done" : rc == -2 ? "NOT MAPPABLE" : "FAILED",
+-		    ns / 1000);
++		    s->id, sw, sh, sx, sy, pw, ph, px, py, buffer, rc == 0 ? (seq_out ? "queued" : "done") :
++		    rc == -2 ? "NOT MAPPABLE" : "FAILED", ns / 1000);
+ 	}
+ 	s->release();
+ 	if (rc) {

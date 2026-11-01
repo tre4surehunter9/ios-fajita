@@ -547,3 +547,11 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **Kernel patch 0121 (2026-11-01): frame info.** 74 answers 3 items (Presentation_time, Issued_time, totalVBLs);
   73 stores the client's mask; each 60 Hz vsync tick sends type 3 [mask, last swap id, now, last swap time,
   vblank count (per mask)].
+- **0121 on the phone (2026-11-01): backboardd takes the frame clock.** It now reads 74 three times (count 3 +
+  names), enables notification type 3 (72) and calls ChangeFrameInfo (73) twice. User: "sorta smoother"; still
+  ~14-15 presents/s. Per frame (~70 ms): ~15 ms GPU (the blit waits for it: copy 14-17 ms), up to ~16 ms flip
+  latch, ~40-45 ms CPU (CoreAnimation + metal2vulkan + Turnip), all serial in backboardd's render thread.
+- **Kernel patch 0122 (2026-11-01):** sampler boot-args `sweetsample_delay` (s), `sweetsample_ms`, `sweetsample_n`
+  (<= 2000) to profile the frame loop; **non-blocking present (opt-in `sweetfb_async=1`)**: the swap queues the
+  blit (submit-only, 8 rotating IB slots) into the buffer not on screen and returns; a worker waits for its fence
+  (GPU interrupt), flips and waits for the latch; at most one flip pending (a swap that finds one waits).
