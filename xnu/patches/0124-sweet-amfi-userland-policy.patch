@@ -1,0 +1,73 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index cb67b4d..6115625 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -28,6 +28,7 @@
+ #include <libkern/amfi/amfi.h>
+ #include <mach/kern_return.h>
+ #include <sys/codesign.h>
++#include <sys/errno.h>
+ #include <sys/mount.h>
+ #include <sys/priv.h>
+ #include <sys/proc.h>
+@@ -367,6 +368,51 @@ static struct mac_policy_conf sweet_amfi_mac_conf = {
+ 
+ static mac_policy_handle_t sweet_amfi_mac_handle;
+ 
++/*
++ * 0124: userland talks to AMFI through __mac_syscall("AMFI", op, arg), and our signature policy is
++ * named "SWEET AMFI", so every such call failed with ENOPOLICY. lsd asks op 0x60
++ * (amfi_interface_query_bootarg_state, a uint64_t written to arg) before it reads the extension-point
++ * catalog /System/Library/xpc/extensions.plist: with no answer it treats the catalog as unverifiable,
++ * registers no app extensions, pkd sees no plugins and PosterBoard finds no wallpaper extension (it
++ * then traps in -[PBFPosterExtensionDataStore _stateLock_setupSwitcherConfigurationForFirstTime]).
++ * State 0x86 means the catalog check is not enforced (facts from ios-apollo / Bergamota's notes on
++ * the same 20H392 build). This policy is named exactly "AMFI" and answers only that op; every other
++ * op keeps ENOPOLICY. The first use of each op is logged.
++ */
++#define SWEET_AMFI_QUERY_BOOTARG_STATE	0x60
++#define SWEET_AMFI_BOOTARG_STATE	0x86ULL
++
++static uint8_t sweet_amfi_op_logged[256 / 8];
++
++static int
++sweet_amfi_userland_syscall(struct proc *p, int op, user_addr_t arg)
++{
++	if (op >= 0 && op < 256 && !(sweet_amfi_op_logged[op / 8] & (1u << (op % 8)))) {
++		sweet_amfi_op_logged[op / 8] |= (uint8_t)(1u << (op % 8));
++		char name[32];
++		proc_name(proc_pid(p), name, sizeof(name));
++		printf("SWEET AMFI: %s asks __mac_syscall(\"AMFI\", 0x%x)%s\n", name, op,
++		    op == SWEET_AMFI_QUERY_BOOTARG_STATE ? ": boot-arg state 0x86" : ": no such op here");
++	}
++	if (op == SWEET_AMFI_QUERY_BOOTARG_STATE) {
++		uint64_t state = SWEET_AMFI_BOOTARG_STATE;
++		return copyout(&state, arg, sizeof(state));
++	}
++	return ENOPOLICY;
++}
++
++static const struct mac_policy_ops sweet_amfi_userland_mac_ops = {
++	.mpo_policy_syscall = sweet_amfi_userland_syscall,
++};
++
++static struct mac_policy_conf sweet_amfi_userland_mac_conf = {
++	.mpc_name = "AMFI",
++	.mpc_fullname = "SWEET AMFI userland interface",
++	.mpc_ops = &sweet_amfi_userland_mac_ops,
++};
++
++static mac_policy_handle_t sweet_amfi_userland_mac_handle;
++
+ /* Called from bsd_init once MAC policies can register, before any exec. */
+ void sweet_amfi_policy_register(void);
+ 
+@@ -376,6 +422,8 @@ sweet_amfi_policy_register(void)
+ 	int error = mac_policy_register(&sweet_amfi_mac_conf, &sweet_amfi_mac_handle, NULL);
+ 	printf("SWEET AMFI: platform binary policy %s (%d)\n",
+ 	    error ? "NOT registered" : "registered", error);
++	error = mac_policy_register(&sweet_amfi_userland_mac_conf, &sweet_amfi_userland_mac_handle, NULL);
++	printf("SWEET AMFI: \"AMFI\" userland policy %s (%d)\n", error ? "NOT registered" : "registered", error);
+ 	error = mac_policy_register(&sweet_sandbox_mac_conf, &sweet_sandbox_mac_handle, NULL);
+ 	printf("SWEET Sandbox: permissive policy %s (%d)\n",
+ 	    error ? "NOT registered" : "registered", error);

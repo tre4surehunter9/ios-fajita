@@ -620,3 +620,12 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   main thread busy: most likely mediaserverd asking launchd for the removed Bluetooth service again and again.
   **phone/unquiet:** puts com.apple.bluetoothd back from launchd.plist.pre-quiet (vmd, fairplayd.H2, ReportCrash
   stay off, as ios-apollo).
+- **PosterBoard (2026-11-01):** traps in -[PBFPosterExtensionDataStore _stateLock_setupSwitcherConfigurationForFirstTime]
+  (assert `!_stateLock_switcherConfiguration`). Same as ios-apollo/Bergamota on 20H392: lsd's
+  __mac_syscall("AMFI", 0x60) got ENOPOLICY (our policy is "SWEET AMFI"), so the extension catalog is
+  ignored, pkd has 0 plugins, PosterBoard 0 wallpaper extensions (widgets "Waiting..." likely the same).
+  **Kernel patch 0124 (written, building):** a MAC policy named "AMFI": op 0x60 -> state 0x86, others ENOPOLICY.
+  **Still to do:** phone program `extfix` = write /private/var/preferences/FeatureFlags/Domain/ExtensionKit.plist
+  ({enforce_xpc_cache_code_signing: {Enabled: false}}, XML, 0:0 644) + delete LaunchServices'
+  com.apple.LaunchServices-*.csstore* (containers/Data/InternalDaemon/*/Library/Caches and System/*) so lsd reseeds;
+  boot 1 0124 + extfix, boot 2 0124: wallpaper + widgets expected.
