@@ -555,3 +555,11 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   (<= 2000) to profile the frame loop; **non-blocking present (opt-in `sweetfb_async=1`)**: the swap queues the
   blit (submit-only, 8 rotating IB slots) into the buffer not on screen and returns; a worker waits for its fence
   (GPU interrupt), flips and waits for the latch; at most one flip pending (a swap that finds one waits).
+- **0122 on the phone (2026-11-01): non-blocking present works.** Blits `queued`, flips `fence ok, latched after
+  7-8 ms`, no timeouts. **21-24 presents/s in use (was 14-15)**; user: "honestly decent smooth now, still not the
+  best but way better". Profile (193 samples of backboardd every 250 ms): its threads wait (mach_msg, semaphores,
+  GPU calls) in nearly every sample, so backboardd's CPU is no longer the limit. ios-apollo (Adreno 650 fork,
+  CoreAnimation -> OpenGL ES bridge) reaches 43-54 fps; its limits were background CPU hogs found with a
+  per-process "top" (vmd, coreduetd, crash loops). Ours: bluetoothd and fairplayd.H2 restart every ~10 s.
+- **Kernel patch 0123 (2026-11-01):** non-blocking present is the default (`sweetfb_async=0` off); **"TOP 10s"**
+  line every `sweettop` s (default 10): CPU per process over the window, % of one core (fill_taskprocinfo).

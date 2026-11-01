@@ -1,0 +1,146 @@
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index 87f34ba..96e03e6 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -21,6 +21,8 @@
+ #include <kern/task.h>
+ #include <kern/thread.h>
+ #include <pexpert/pexpert.h>
++#include <sys/bsdtask_info.h>
++#include <kern/clock.h>
+ 
+ extern task_t proc_task(proc_t);
+ extern int hz;
+@@ -87,6 +89,99 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+ 	}
+ }
+ 
++/*
++ * 0123 "top": every sweettop seconds (default 10, 0 = off) the processes that used the most CPU in that
++ * window, as percent of one core ("TOP 10s: name[pid] N% ..."), and the sum. Times from
++ * fill_taskprocinfo (what proc_pidinfo PROC_PIDTASKINFO reports: user + system of live and finished
++ * threads, in mach absolute time). Found ios-apollo's background hogs (vmd, coreduetd, crash loops).
++ */
++#define TOP_MAX		512
++#define TOP_SHOW	10
++
++struct top_ent {
++	int pid;
++	uint64_t abs;
++	char name[24];
++};
++
++static struct top_ent top_prev[TOP_MAX], top_cur[TOP_MAX];
++static unsigned top_nprev, top_ncur;
++
++extern void fill_taskprocinfo(task_t task, struct proc_taskinfo_internal *ptinfo);
++
++static int
++top_proc(proc_t p, __unused void *arg)
++{
++	if (top_ncur >= TOP_MAX) {
++		return PROC_RETURNED;
++	}
++	task_t task = proc_task(p);
++	if (task == TASK_NULL) {
++		return PROC_RETURNED;
++	}
++	struct proc_taskinfo_internal ti;
++	bzero(&ti, sizeof(ti));
++	fill_taskprocinfo(task, &ti);
++	struct top_ent *e = &top_cur[top_ncur++];
++	e->pid = proc_pid(p);
++	e->abs = ti.pti_total_user + ti.pti_total_system;
++	proc_name(e->pid, e->name, sizeof(e->name));
++	return PROC_RETURNED;
++}
++
++static void
++sweet_top_thread(__unused void *arg, __unused wait_result_t wr)
++{
++	static int chan;
++	uint32_t secs = 10;
++	PE_parse_boot_argn("sweettop", &secs, sizeof(secs));
++	if (secs == 0) {
++		return;
++	}
++	for (;;) {
++		top_ncur = 0;
++		proc_iterate(PROC_ALLPROCLIST, top_proc, NULL, NULL, NULL);
++		/* delta per process (by pid) against the previous window, then the largest TOP_SHOW */
++		uint64_t delta[TOP_MAX], total = 0;
++		for (unsigned i = 0; i < top_ncur; i++) {
++			delta[i] = 0;
++			for (unsigned j = 0; j < top_nprev; j++) {
++				if (top_prev[j].pid == top_cur[i].pid && top_cur[i].abs >= top_prev[j].abs) {
++					delta[i] = top_cur[i].abs - top_prev[j].abs;
++					break;
++				}
++			}
++			total += delta[i];
++		}
++		if (top_nprev) {
++			char line[512];
++			uint64_t window_ns = (uint64_t)secs * 1000000000ULL, tns;
++			absolutetime_to_nanoseconds(total, &tns);
++			int len = snprintf(line, sizeof(line), "TOP %us: all %llu%%:", secs, tns * 100 / window_ns);
++			for (unsigned k = 0; k < TOP_SHOW; k++) {
++				unsigned best = TOP_MAX;
++				for (unsigned i = 0; i < top_ncur; i++) {
++					if (delta[i] && (best == TOP_MAX || delta[i] > delta[best])) {
++						best = i;
++					}
++				}
++				if (best == TOP_MAX || len >= (int)sizeof(line) - 40) {
++					break;
++				}
++				uint64_t ns;
++				absolutetime_to_nanoseconds(delta[best], &ns);
++				len += snprintf(line + len, sizeof(line) - (size_t)len, " %s[%d] %llu%%", top_cur[best].name,
++				    top_cur[best].pid, ns * 100 / window_ns);
++				delta[best] = 0;
++			}
++			printf("%s\n", line);
++		}
++		memcpy(top_prev, top_cur, sizeof(top_cur[0]) * top_ncur);
++		top_nprev = top_ncur;
++		(void)tsleep(&chan, PZERO, "sweettop", (int)secs * hz);
++	}
++}
++
+ void
+ sweet_sample_start(void)
+ {
+@@ -94,4 +189,7 @@ sweet_sample_start(void)
+ 	if (kernel_thread_start(sweet_sample_thread, NULL, &thread) == KERN_SUCCESS) {
+ 		thread_deallocate(thread);
+ 	}
++	if (kernel_thread_start(sweet_top_thread, NULL, &thread) == KERN_SUCCESS) {
++		thread_deallocate(thread);
++	}
+ }
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index 0833a86..bf9020c 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -796,7 +796,7 @@ AppleCLCD::present(const uint8_t *rec)
+ }
+ 
+ /*
+- * 0122 non-blocking present (sweetfb_async=1, needs the GPU blit): the swap queues the blit into the buffer
++ * 0122 non-blocking present (default since 0123; sweetfb_async=0 off; needs the GPU blit): the swap queues the blit into the buffer
+  * that is not on screen and returns; a worker thread waits for that blit's fence (woken by the GPU
+  * interrupt), flips VIG0 and waits for the latch. One flip may be pending: a swap that finds one waits for
+  * it, so the buffer it then blits into is never the one being scanned or flipped to. The source surface
+@@ -834,8 +834,9 @@ sweet_async_worker(void *arg __unused, wait_result_t wr __unused)
+ static void
+ sweet_async_init(void)
+ {
+-	uint32_t on = 0;
+-	if (!sweet_gpublit_on || !PE_parse_boot_argn("sweetfb_async", &on, sizeof(on)) || !on) {
++	uint32_t on = 1;			/* 0123: default on (sweetfb_async=0: the blocking present) */
++	PE_parse_boot_argn("sweetfb_async", &on, sizeof(on));
++	if (!sweet_gpublit_on || !on) {
+ 		return;
+ 	}
+ 	sweet_async_lock = IOLockAlloc();
