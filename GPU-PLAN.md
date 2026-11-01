@@ -654,3 +654,6 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   container), AegirPoster 24 crashes (0 on 0124; link to 0125 not proven).
   **Kernel patch 0126:** only those three extensions get the path; everyone else ENOENT as on 0124.
 - **0126 on the phone (2026-11-01):** wallpaper shows on every boot since 0124 (user). Results in work/tmp/usb-0126.log.
+- **0126 results:** voices exec once and do not crash (a 2-3 min log), WeatherPoster/CollectionsPoster traps gone,
+  **AegirPoster still 22 crashes, so 0125 was not its cause** (uncaught exception on an FBSSerialQueue block, not
+  looked into further; ios-apollo saw the same and moved its appex aside). Idle total ~33 %, backboardd ~21 %.

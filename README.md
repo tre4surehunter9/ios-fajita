@@ -24,7 +24,7 @@ As of **2026-11-01** the OnePlus 6T boots to the **iOS lock screen and home scre
 | iOS userland | Real iPhone X 16.7.16 root filesystem and shared cache; launchd and the system daemons run |
 | GPU | Adreno 630: GMU, RPMh votes, zap shader (PAS 13), command processor, SMMU context, 256 MiB GPU arena, GPU interrupts; core PLL at 710 MHz; a NativeAdreno user client (`SweetGPU`) for Mesa Turnip (Vulkan 1.3) and an IOAcceleratorES (`SweetMetal`) that loads `SweetMetal2.bundle` (metal2vulkan + Turnip) into CoreAnimation's processes |
 | Display | Kernel IOSurface + IOMobileFramebuffer services. Presented to iOS as an iPhone X panel (1125×2436). Each frame is scaled by the GPU's 2D engine onto the 1080×2340 panel into one of two scan-out buffers, and the display controller's VIG0 pipe flips to it at the next refresh, without blocking the swap. iOS 16's frame-info clock (`Presentation_time`) is provided |
-| GUI | backboardd, SpringBoard, lock screen, home screen, Settings (About shows "OnePlus 6T"), all 32 removable Apple apps (Calculator, Weather, Notes, Maps, ...) |
+| GUI | backboardd, SpringBoard, lock screen, home screen, wallpaper and widget extensions, Settings (About shows "OnePlus 6T"), all 32 removable Apple apps (Calculator, Weather, Notes, Maps, ...) |
 | Touch | Synaptics RMI4 (S3706B) at I²C `0x20` on QUP wrapper 1 SE4 (`0xa90000`), polled; rail PM8998 L28A voted through RPMh |
 | Buttons | Power (PM8998 PON), volume up/down (PM8998 GPIO6/GPIO5), read over SPMI |
 | Device identity | iPhone X (`iPhone10,3` / `D22AP`): no Home button, gesture UI |
@@ -34,7 +34,8 @@ As of **2026-11-01** the OnePlus 6T boots to the **iOS lock screen and home scre
 ## What does not work (yet)
 
 - **No Wi-Fi, Bluetooth, cellular, audio, camera, sensors, GPS, SEP / Face ID.** Their daemons start and fail or keep relaunching. `phone/quiet` turns off voicemail's `vmd` (spun a core), `fairplayd.H2` and `ReportCrash`; `bluetoothd` stays on, because mediaserverd and launchd spin without it.
-- **The wallpaper is black:** PosterBoard crashes on start.
+- **Some extensions still crash:** AegirPoster (the astronomy wallpaper) loops, as do `assetsd`, MusicWidgets and BooksWidgetExtension now and then.
+- **No charging or battery level:** nothing drives the charger or the fuel gauge yet, and the phone can run flat with no warning.
 - **Not fully smooth yet** (about 20–24 frames a second while scrolling): backboardd's render thread uses a whole core, much of it in the Metal-to-Vulkan layer.
 - **Only 3.95 GiB of the 8 GiB** RAM is used.
 - **The clock starts at 1970**, so anything that checks certificates fails.
@@ -129,6 +130,7 @@ The first boot builds the LaunchServices database, which takes a few minutes on 
 - **GPU firmware:** the boot image carries the A630 SQE/GMU firmware and the zap shader (`mkpayload.py --gpufw DIR`; the files come from postmarketOS / linux-firmware, not from git), plus `sweetgpu=3 sweetmtl=2` in the boot-args.
 - **Metal for CoreAnimation:** `SweetMetal2.bundle` (built by the `metal2` workflow) goes to `/System/Library/Extensions`. Either boot once with `mkpayload.py --run mtl2install`, or write it into the root image on the PC with `tools/sweet-root-apps.py --metal2 mtl2install`.
 - **All the apps:** `tools/sweet-root-apps.py` copies the 32 removable apps from `/private/var/staged_system_apps` to `/Applications` and makes LaunchServices reseed (the first-boot data migration that installs them on a real phone is skipped here).
+- **Wallpapers and widgets:** boot once with `mkpayload.py --run extfix` on a kernel with patch 0124. It sets the ExtensionKit flag and deletes LaunchServices' database, which then reseeds with the extensions.
 - **Quieter background:** boot once with `mkpayload.py --run quiet` (the `phone` workflow builds it). It takes voicemail, FairPlay and ReportCrash out of launchd's job list on the phone; the original stays as `launchd.plist.pre-quiet`, and `unquiet` puts jobs back.
 
 ### Boot-args
@@ -232,6 +234,8 @@ Not in git: partition backups, live device trees, Apple firmware and root images
 | 0119–0120 | CPU clock report (OSM tables, measured per core) and both clusters to their top level (big cores were left at 825 MHz) |
 | 0121 | IOMobileFramebuffer frame info (selectors 73/74, notification type 3): CoreAnimation's iOS 16 frame clock |
 | 0122–0123 | Fast sampler boot-args; non-blocking present (the swap queues the blit, a worker flips); per-process CPU "TOP" line |
+| 0124 | A MAC policy named "AMFI" answers lsd's boot-arg state query, so the extension catalog gets read (wallpapers, widgets) |
+| 0125–0126 | Sandbox container path for the three Siri voice extensions (PlugInKit's start-up check) |
 
 ## Key hardware facts (OnePlus 6T)
 
