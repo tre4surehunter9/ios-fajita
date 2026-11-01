@@ -1,0 +1,60 @@
+diff --git a/bsd/dev/sweet_sample.c b/bsd/dev/sweet_sample.c
+index 96e03e6..84bfee0 100644
+--- a/bsd/dev/sweet_sample.c
++++ b/bsd/dev/sweet_sample.c
+@@ -100,7 +100,8 @@ sweet_sample_thread(__unused void *arg, __unused wait_result_t wr)
+ 
+ struct top_ent {
+ 	int pid;
+-	uint64_t abs;
++	uint64_t abs, sys;
++	int32_t faults, cow, syscalls, csw;
+ 	char name[24];
+ };
+ 
+@@ -125,6 +126,11 @@ top_proc(proc_t p, __unused void *arg)
+ 	struct top_ent *e = &top_cur[top_ncur++];
+ 	e->pid = proc_pid(p);
+ 	e->abs = ti.pti_total_user + ti.pti_total_system;
++	e->sys = ti.pti_total_system;
++	e->faults = ti.pti_faults;
++	e->cow = ti.pti_cow_faults;
++	e->syscalls = ti.pti_syscalls_mach + ti.pti_syscalls_unix;
++	e->csw = ti.pti_csw;
+ 	proc_name(e->pid, e->name, sizeof(e->name));
+ 	return PROC_RETURNED;
+ }
+@@ -143,11 +149,14 @@ sweet_top_thread(__unused void *arg, __unused wait_result_t wr)
+ 		proc_iterate(PROC_ALLPROCLIST, top_proc, NULL, NULL, NULL);
+ 		/* delta per process (by pid) against the previous window, then the largest TOP_SHOW */
+ 		uint64_t delta[TOP_MAX], total = 0;
++		int match[TOP_MAX];
+ 		for (unsigned i = 0; i < top_ncur; i++) {
+ 			delta[i] = 0;
++			match[i] = -1;
+ 			for (unsigned j = 0; j < top_nprev; j++) {
+ 				if (top_prev[j].pid == top_cur[i].pid && top_cur[i].abs >= top_prev[j].abs) {
+ 					delta[i] = top_cur[i].abs - top_prev[j].abs;
++					match[i] = (int)j;
+ 					break;
+ 				}
+ 			}
+@@ -172,6 +181,18 @@ sweet_top_thread(__unused void *arg, __unused wait_result_t wr)
+ 				absolutetime_to_nanoseconds(delta[best], &ns);
+ 				len += snprintf(line + len, sizeof(line) - (size_t)len, " %s[%d] %llu%%", top_cur[best].name,
+ 				    top_cur[best].pid, ns * 100 / window_ns);
++				/* 0128: the three busiest also get kernel share and per-second counts. */
++				if (k < 3 && match[best] >= 0) {
++					const struct top_ent *c = &top_cur[best], *o = &top_prev[match[best]];
++					uint64_t sysns = 0;
++					if (c->sys >= o->sys) {
++						absolutetime_to_nanoseconds(c->sys - o->sys, &sysns);
++					}
++					printf("TOPX %s[%d]: cpu %llu%% kernel %llu%%, per s: faults %d cow %d syscalls %d switches %d\n",
++					    c->name, c->pid, ns * 100 / window_ns, sysns * 100 / window_ns,
++					    (c->faults - o->faults) / (int)secs, (c->cow - o->cow) / (int)secs,
++					    (c->syscalls - o->syscalls) / (int)secs, (c->csw - o->csw) / (int)secs);
++				}
+ 				delta[best] = 0;
+ 			}
+ 			printf("%s\n", line);

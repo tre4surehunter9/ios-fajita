@@ -660,3 +660,10 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **Kernel patch 0127 (2026-11-01, user chose "find the hot code"):** the sampler prints `SMPIMG name address path` for images
   outside the shared cache, so backboardd's samples in SweetMetal2 (6635 symbols) can be named. Turnip's dylib is
   stripped (6 exports): only its share is visible until it is rebuilt with symbols.
+- **Hot-code profile during scrolling (0127, 2026-11-01; 450 samples, 15-19 presents/s, backboardd 80-89 %):** user-mode
+  running samples cover ~34 % of a core, so about half of backboardd's CPU is not user code. Of those: SweetMetal2 51 %,
+  Turnip 14 %, unfair lock waits 12 %, QuartzCore 9 %. Hottest spot ~11 %: stores at SweetMetal2 +0x460e90/+0x460e98
+  (unnamed routine after error::internal), 112-byte entries into a growing list. Hypothesis, unproven: per-frame
+  allocation -> page faults, zero fill, TLB shootdowns. Idle: ~9.5 presents/s with nothing moving (backboardd ~21 %), cause
+  unknown.
+- **Kernel patch 0128:** `TOPX name[pid]: cpu kernel%, per s: faults cow syscalls switches` for the 3 busiest each window.
