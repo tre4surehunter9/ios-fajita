@@ -8,6 +8,40 @@ same ios-sweet base, same iOS 16.7.16 20H392 userland): an in-kernel GPU core pl
 Decisions (user, 2026-10-29): the zap shader comes from postmarketOS (open source); all builds,
 userland included, run on GitHub Actions (no Mac available).
 
+## Status (2026-11-01): GPU milestone done, paused here (user)
+
+The home screen and apps are composited by the Adreno 630 through Metal. It is "decent smooth" (user) but not
+60 fps: 21-24 presents/s while scrolling.
+
+| Piece | Patches | State |
+| --- | --- | --- |
+| GPU bring-up (GMU, RPMh, SMMU, zap, CP, arena, fences) | 0094-0097 | done, `sweetgpu=3` |
+| Turnip (Vulkan 1.3) through `SweetGPU`, UBWC | 0098-0099 | `VKTEST ALL PASS` |
+| Metal for CoreAnimation: `SweetMetal` + SweetMetal2.bundle (metal2vulkan + Turnip) | 0101 | home screen on the GPU |
+| GPU clock: GMU perf table + DCVS, PLL0 latched by us when the GMU leaves it unlocked | 0104, 0107-0111 | 9.6 -> **710 MHz** |
+| Frames copied at swap time (no mixed frames) | 0109 | artifacts gone |
+| Present path: VIG0 flips between two aligned scan-out buffers, GPU 2D blit scales 1125x2436 onto 1080x2340, touch follows | 0112-0117 | CPU copy gone, edges fit (Phase 5) |
+| GPU interrupt wakes fence waiters | 0118 | irqs = submits |
+| CPUs to their top OSM level | 0119-0120 | big cores 825 -> **2649 MHz** |
+| IOMobileFramebuffer frame info (iOS 16 CoreAnimation frame clock) | 0121 | backboardd subscribes |
+| Non-blocking present, fast sampler, per-process TOP | 0122-0123 | **14 -> 21-24 presents/s** |
+| Background load: `phone/quiet` (vmd, fairplayd.H2, ReportCrash off), `phone/unquiet` (bluetoothd back) | - | idle CPU ~160 % -> 6-12 % of a core |
+
+Where the rest of the frame time goes: backboardd's render thread is CPU-bound during use (TOP: 50-108 % of a
+core) and its busy samples land in SweetMetal2/Turnip code (outside the shared cache, not symbolicated yet).
+Open options, to ask the user about after PosterBoard:
+- the sampler logs where SweetMetal2/Turnip load, so their hot functions can be named;
+- three scan-out buffers;
+- UBWC for the surfaces;
+- ios-apollo's OpenGL ES bridge as a comparison (43-54 fps there, but Metal-only parts break).
+
+Disabled jobs to restore with their features: bluetoothd is on again; vmd + CommCenter (cellular),
+fairplayd.H2, ReportCrash stay off. The original job list is `/System/Library/xpc/launchd.plist.pre-quiet`
+on the phone.
+
+Booting: `fastboot boot` sometimes fails with "Load Error" (even known-good images, even after a cold start).
+Flash the image to boot_a, then `fastboot continue`. The USB log only comes up when started from fastboot.
+
 ## Sources and how each may be used
 
 | Source | Licence | Use |
@@ -17,6 +51,11 @@ userland included, run on GitHub Actions (no Mac available).
 | Mainline Linux `drivers/gpu/drm/msm/adreno/a6xx_gmu.c`, `a6xx_gpu.c`, `sdm845.dtsi` | GPL-2.0 | Facts and sequences. No code |
 | [iOSPlus10](https://github.com/akshaynexus/iOSPlus10) (A730) | see repo | Design notes (`docs/gpu-*.md`, `metal-design.md`), comparison of all ports |
 | [metal2vulkan](https://github.com/steelbrain/metal2vulkan) | GPL-2+ or LGPL-3+ | Built as ios-flame does |
+| [Mesa](https://gitlab.freedesktop.org/mesa/mesa) (Turnip, freedreno `fd6_blitter.cc`, `freedreno_devices.py`, register XML) | MIT | Turnip built and patched; the 2D blit sequence and A630 values as facts |
+| Downstream OnePlus/LineageOS `android_kernel_oneplus_sdm845` (`gpucc-sdm845.c`, `clk-alpha-pll.c`) | GPL-2.0 | Facts only: PLL0/gfx3d RCG layout, Fabia latch |
+| Mainline `qcom-cpufreq-hw.c`, DPU catalog (`dpu_4_0_sdm845.h`, `dpu_hw_*.c`) | GPL-2.0 | Facts only: OSM tables, MDP layout |
+| iOS 16 IOMobileFramebuffer / QuartzCore (shared cache, 20H392) | Apple | Read for interoperability only: selector numbers, the frame-info protocol |
+| [aTechGeekDev/ios-apollo](https://github.com/aTechGeekDev/ios-apollo) (A650) | see repo | Findings only: background CPU hogs, present design |
 
 ## Firmware (outside git, `research/gpu/fw/`)
 

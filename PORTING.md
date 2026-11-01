@@ -6,9 +6,25 @@ ADT (`tools/mkadt.py --board fajita`). Sweet's ADT output is byte-identical to
 before; sweet's shim build is unchanged apart from reading the same constants
 from `shim/board.h`.
 
-Rules for this port: nothing is flashed. Boot only with `fastboot boot`. Never
-touch bootloader, modem, persist or other firmware partitions. The phone runs
-Sailfish OS on OxygenOS 11 firmware; the user runs every phone-side step.
+Rules for this port: never touch bootloader, modem, persist or other firmware
+partitions. Boot test images with `fastboot boot`. Flashing was later approved by
+the user for two partitions only: `userdata` (the iOS root, Sailfish OS given up)
+and `boot_a` (a stable shim image; the original Sailfish boot image is kept as
+`dtb/fajita/boot_a.img`). Destructive steps need the user's explicit yes.
+
+## Status (2026-11-01)
+
+| Milestone | State |
+| --- | --- |
+| 1. Kernel prints to the framebuffer | done (2026-10-28) |
+| 2. UFS and root | done: iOS root in `userdata` (root image v5: all apps, SweetMetal2) |
+| 3. Touch and buttons | done (2026-10-28) |
+| 4. GUI | done: lock screen, home screen, apps (2026-10-29) |
+| GPU | done and paused (2026-11-01): CoreAnimation on the Adreno 630 through Metal, 710 MHz, GPU-scaled flips, 21-24 fps scrolling. Log: [`GPU-PLAN.md`](GPU-PLAN.md) |
+
+Next (user's order): the PosterBoard wallpaper crash, then decide further GPU work, then all 8 GiB of
+RAM, then Wi-Fi. Daily boot: `boot_a` holds `shim-boot-0123.img`; test images go through `fastboot boot`, or
+through a flash to boot_a + `fastboot continue` when ABL answers "Load Error".
 
 ## Milestone 1 plan: kernel prints to the framebuffer
 
@@ -291,7 +307,8 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
 
 ## Blocked / open
 
-- ~~`fastboot boot` unconfirmed~~ **Works ✔** (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
+- ~~`fastboot boot` unconfirmed~~ **Works ✔** (but since 2026-10-31 it intermittently answers "Load Error";
+  flashing boot_a + `fastboot continue` always works) (probe boot 2026-10-28, `Sending OKAY / Booting OKAY`). Earlier note: edi194/ios-fajita reports
   `unknown command` on OOS 10/11 and flashes `boot_b` instead. johnpanos/UniXNU-fajita
   reports it works (and that it fails with "Load Error" when the active slot's boot
   partition holds an image). Step 5 settles it. If it fails, the port is blocked by
@@ -299,18 +316,18 @@ network device and streams the console as UDP to 192.168.7.1:5140, which
 - **Panel refresh.** The panel is a DSI **command-mode** panel ✔ (`msm_drm.dsi_display0=dsi_samsung_s6e3fc2x01_cmd_display`).
   A CPU write to the splash buffer appears only if ABL left MDP auto-refresh on.
   ✔ It does: the probe's heartbeat keeps updating, so ABL leaves the panel refreshing from `0x9d400000`.
-- **Milestone 2 conflict.** Sweet's design puts the iOS root in `userdata`. On this
-  phone `userdata` holds Sailfish OS, so a UFS root there erases Sailfish. Needs a
-  decision before milestone 2.
-- **Payload size.** UniXNU-fajita reports that ABL refuses large ramdisks. Sweet's payload
-  (kernel + ADT) is the ramdisk. Not yet measured.
+- ~~**Milestone 2 conflict.**~~ Resolved: the user gave up Sailfish; the iOS root is in `userdata`.
+- ~~**Payload size.**~~ Measured: ABL stays on its splash with a ~41 MB payload; payloads are compressed
+  (`mkpayload.py --compress`, `SWEETZ01` + raw DEFLATE) and the shim unpacks them with the MMU on.
+- **Open:** PosterBoard (wallpaper) crashes with SIGTRAP; only 3.95 GiB of RAM used; no Wi-Fi, Bluetooth,
+  modem, audio, camera, sensors.
 
 ## Hardware facts
 
 Sources: M = mainline `sdm845.dtsi` / `sdm845-oneplus-common.dtsi` /
 `sdm845-oneplus-fajita.dts` (torvalds/linux master, fetched 2026-10-28);
 P = postmarketOS `device-oneplus-fajita/deviceinfo`; R = reported by another port,
-unverified; ✔ = confirmed on this phone (none yet).
+unverified; ✔ = confirmed on this phone.
 
 | Item | Value | Source |
 | --- | --- | --- |
@@ -330,6 +347,10 @@ unverified; ✔ = confirmed on this phone (none yet).
 | Debug UART | GENI SE `0xa84000` (uart9), which is the address of sweet's touch I²C. Keep `sweettouch=0` | M |
 | Fuel gauge | bq27411 at I²C10 `0xa88000` addr `0x55` | M |
 | IMEM restart reason | `0x146bf65c` (R); not written by the shim | R |
+| GPU | Adreno 630 `0x5000000`, GMU `0x506a000`, GPU SMMU `0x5040000` (stream table trapped by the hypervisor), SPI 300 (INTID 332, usable from non-secure), zap PAS 13 at `0x8c415000` | M, ✔ |
+| GPU clock | gpucc PLL0 (Fabia, L/FRAC take effect only after the UPDATE/ACK_LATCH latch) -> gfx3d RCG `+0x101c/+0x1020` (input 1, /1); core = PLL0 / 2 (534 MHz PLL measured 266 MHz). gpucc `0x1024`-`0x1038` traps to crash-dump mode | downstream gpucc-sdm845.c, ✔ |
+| Display controller | MDP `0x0ae01000`; ABL scans with VIG0 (`+0x4000`, format `0x237ff`, stride 4320) through CTL0, PINGPONG0 auto-refresh on; display SMMU streams `0x880`/`0xc80` -> CB0 with translation off | mainline DPU catalog, ✔ |
+| CPU clock (OSM) | domain 0 `0x17d43000` (cpus 0-3, 300-1766 MHz), domain 1 `0x17d45800` (cpus 4-7, 825-2649 MHz, 2707 turbo); ABL leaves domain 1 at level 0 (825 MHz); level = write `PERF_STATE +0x920` | mainline qcom-cpufreq-hw.c, ✔ |
 
 ## Kernel boot-args for fajita (milestone 1)
 

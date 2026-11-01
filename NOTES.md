@@ -2,9 +2,19 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### fajita (OnePlus 6T) port, branch `fajita` (handoff 2026-10-28 late)
+### fajita (OnePlus 6T) port, branch `fajita` (handoff 2026-11-01, latest)
 
-Details, boot log and hardware facts: `PORTING.md`. State:
+Details, boot log and hardware facts: `PORTING.md`; GPU, display and performance: `GPU-PLAN.md` (status
+table at the top). State:
+- **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
+  Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
+  top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
+  frame-info clock; 21-24 fps scrolling. boot_a = `shim/out-fajita/shim-boot-0123.img` (kernel run
+  41260680647). userdata = root v5 (all 32 apps, SweetMetal2), plus on-phone changes: `phone/quiet` took
+  vmd, fairplayd.H2, ReportCrash out of launchd.plist (backup `launchd.plist.pre-quiet`), `phone/unquiet`
+  put bluetoothd back; idle CPU 6-12 % of a core. **Next (user's order):** PosterBoard (black wallpaper,
+  SIGTRAP on start), then ask the user about more GPU work (options in GPU-PLAN.md), then 8 GiB RAM, then
+  Wi-Fi. Boot quirk: `fastboot boot` may answer "Load Error"; flash boot_a + `fastboot continue` works.
 - **Done:** kernel to framebuffer (0082/0083); UFS root on `userdata` (image v1 flashed,
   Sailfish gone); launchd + daemons; 8 CPUs (`cpus=8`); keys (0087); touch RMI4 (0088,
   `sweettouch=1 sweettouchdelay=60`). Patches 0082-0088 change no sweet behaviour (board picked
