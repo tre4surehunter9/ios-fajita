@@ -648,3 +648,8 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   sandbox op 4 (container path) answers ENOENT. **Kernel patch 0125:** op 4 args { pid, pidversion, buffer, size,
   flag }; a process asking about itself with its executable inside an .appex gets /private/var/mobile; everyone
   else keeps ENOENT (`sweetsbappex=0`: nobody). Not booted yet.
+- **0125 on the phone (2026-11-01): too wide.** The three voice extensions exec once and no longer crash (10 each
+  before), but every .appex got the path: WeatherPoster and CollectionsPoster trap in
+  +[PRSPosterPath _temporaryDirectoryURLWithContainerPath:...] ("unexpected mkdtemp result"; the path is no real
+  container), AegirPoster 24 crashes (0 on 0124; link to 0125 not proven).
+  **Kernel patch 0126:** only those three extensions get the path; everyone else ENOENT as on 0124.

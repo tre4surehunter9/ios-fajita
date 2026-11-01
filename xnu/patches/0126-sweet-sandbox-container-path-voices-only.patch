@@ -1,0 +1,58 @@
+diff --git a/bsd/kern/sweet_amfi.c b/bsd/kern/sweet_amfi.c
+index 9a1fe10..d919926 100644
+--- a/bsd/kern/sweet_amfi.c
++++ b/bsd/kern/sweet_amfi.c
+@@ -293,9 +293,11 @@ static uint64_t sweet_sandbox_seen;
+  * { u64 pid, u64 pid version, u64 buffer, u64 size, u64 flag }. PlugInKit's start-up check in an app
+  * extension needs it to succeed with a path longer than one byte, else it throws "plugin has invalid
+  * sandbox or container: error %d path %s" (the Siri voice extensions' crash loop: SiriTTSSynthesizerAU,
+- * MacinTalkAUSP, KonaSynthesizer); it only tests the path. So a process asking about itself whose
+- * executable is inside an .appex gets a real writable directory, as there are no containers here;
+- * everyone else, launchd's queries about others included, keeps ENOENT. sweetsbappex=0: never answer.
++ * MacinTalkAUSP, KonaSynthesizer); it only tests the path. So those extensions, asking about themselves,
++ * get a real directory; there are no containers here. 0126: only those three. 0125 answered every .appex,
++ * and poster extensions use the path: PRSPosterPath's mkdtemp under it fails and traps (WeatherPoster,
++ * CollectionsPoster), and AegirPoster crash-looped on that boot. Everyone else, launchd's queries about
++ * others included, keeps ENOENT. sweetsbappex=0: never answer.
+  */
+ #define SWEET_SB_APPEX_PATH	"/private/var/mobile"
+ 
+@@ -303,8 +305,14 @@ struct sweet_sb_container_args {
+ 	uint64_t pid, pidversion, buffer, size, flag;
+ };
+ 
++static const char *const sweet_sb_container_extensions[] = {
++	"/SiriTTSService.framework/PlugIns/SiriTTSSynthesizerAU.appex/",
++	"/MacinTalk.framework/PlugIns/MacinTalkAUSP.appex/",
++	"/TextToSpeechKonaSupport.framework/PlugIns/KonaSynthesizer.appex/",
++};
++
+ static bool
+-sweet_proc_is_appex(struct proc *p)
++sweet_proc_wants_container_path(struct proc *p)
+ {
+ 	vnode_t vp = proc_getexecutablevnode(p);
+ 	if (vp == NULLVP) {
+@@ -312,7 +320,12 @@ sweet_proc_is_appex(struct proc *p)
+ 	}
+ 	char path[MAXPATHLEN];
+ 	int len = sizeof(path);
+-	bool yes = vn_getpath(vp, path, &len) == 0 && strnstr(path, ".appex/", sizeof(path)) != NULL;
++	bool yes = false;
++	if (vn_getpath(vp, path, &len) == 0) {
++		for (size_t i = 0; i < sizeof(sweet_sb_container_extensions) / sizeof(sweet_sb_container_extensions[0]); i++) {
++			yes = yes || strnstr(path, sweet_sb_container_extensions[i], sizeof(path)) != NULL;
++		}
++	}
+ 	vnode_put(vp);
+ 	return yes;
+ }
+@@ -328,7 +341,7 @@ sweet_sandbox_container_path(struct proc *p, user_addr_t arg)
+ 	}
+ 	struct sweet_sb_container_args a;
+ 	if (!on || copyin(arg, &a, sizeof(a)) != 0 || a.pid != (uint64_t)proc_pid(p) ||
+-	    a.size < sizeof(SWEET_SB_APPEX_PATH) || !sweet_proc_is_appex(p)) {
++	    a.size < sizeof(SWEET_SB_APPEX_PATH) || !sweet_proc_wants_container_path(p)) {
+ 		return ENOENT;
+ 	}
+ 	int error = copyout(SWEET_SB_APPEX_PATH, (user_addr_t)a.buffer, sizeof(SWEET_SB_APPEX_PATH));
