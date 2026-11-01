@@ -179,6 +179,10 @@ Steps, each its own build and phone test:
   bq27411 at I2C10 `0xa88000` addr `0x55` (mainline, unverified here; PORTING.md); sweet has a battery power
   source service to build on (patches 0060-0063). CPUs stay locked at their top level (0120), so clock scaling
   when idle belongs with this too.
+- **Before Wi-Fi, after the battery gauge: SSH over USB (user, 2026-11-01).** `ue0` (192.168.7.2) is a real ifnet in
+  bsd/dev/sweet_usb.c, so no kernel work: dropbear, dash and toybox built by the `phone` workflow (Bergamota's
+  docs/SSH_OVER_USB.md uses the same upstream software), installed by a run-once program plus a launchd job.
+  Key-only, USB link only.
 - **Then Wi-Fi (user, 2026-10-31).** WCN3990: its firmware runs on the modem DSP, so: boot the modem (firmware
   loaded into RAM from the stock images, partitions never written), QRTR/QMI, an ath10k-style driver, and an en0
   for iOS's Wi-Fi stack; ios-flame's `wland` path (phone/wifi, kernel 0123) is the reference.
