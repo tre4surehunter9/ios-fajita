@@ -1,0 +1,54 @@
+diff --git a/osfmk/kern/exception.c b/osfmk/kern/exception.c
+index a20a764..cc9d955 100644
+--- a/osfmk/kern/exception.c
++++ b/osfmk/kern/exception.c
+@@ -996,6 +996,41 @@ sweet_crash_strings(const char *name)
+  */
+ void sweet_sample_task(const char *name, int pid, task_t task);
+ 
++/*
++ * 0127: "SMPIMG name load-address path" for each image outside the shared cache, so samples in our own
++ * libraries (SweetMetal2, Turnip) can be symbolicated. dyld_all_image_infos: u32 version, u32 count,
++ * u64 infoArray; each dyld_image_info: u64 load address, u64 path, u64 mod date.
++ */
++#define SWEET_DSC_START		0x180000000ULL
++#define SWEET_DSC_END		0x300000000ULL
++
++static void
++sweet_sample_images(const char *name, task_t task, vm_map_t map)
++{
++	struct { uint32_t version, count; uint64_t array; } infos;
++	mach_vm_address_t addr = task_get_all_image_info_addr(task);
++	if (addr == 0 || vm_map_read_user(map, addr, &infos, sizeof(infos)) != KERN_SUCCESS || infos.array == 0) {
++		return;
++	}
++	for (uint32_t i = 0; i < infos.count && i < 4096; i++) {
++		uint64_t img[3];
++		char path[128];
++		if (vm_map_read_user(map, infos.array + 24ULL * i, img, sizeof(img)) != KERN_SUCCESS) {
++			return;
++		}
++		if (img[0] >= SWEET_DSC_START && img[0] < SWEET_DSC_END) {
++			continue;
++		}
++		/* Not across a page end: the string may be the last thing mapped there. */
++		size_t len = MIN(sizeof(path) - 1, (size_t)(PAGE_SIZE - (img[1] & PAGE_MASK)));
++		if (vm_map_read_user(map, img[1], path, len) != KERN_SUCCESS) {
++			continue;
++		}
++		path[len] = 0;
++		printf("SMPIMG %s 0x%llx %s\n", name, img[0], path);
++	}
++}
++
+ void
+ sweet_sample_task(const char *name, int pid, task_t task)
+ {
+@@ -1010,6 +1045,7 @@ sweet_sample_task(const char *name, int pid, task_t task)
+ 		vm_shared_region_deallocate(sr);
+ 	}
+ 	printf("SMP %s[%d] slide 0x%llx mh 0x%llx\n", name, pid, slide, task->mach_header_vm_address);
++	sweet_sample_images(name, task, map);
+ 
+ 	task_lock(task);
+ 	queue_iterate(&task->threads, thread, thread_t, task_threads) {

@@ -657,3 +657,6 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
 - **0126 results:** voices exec once and do not crash (a 2-3 min log), WeatherPoster/CollectionsPoster traps gone,
   **AegirPoster still 22 crashes, so 0125 was not its cause** (uncaught exception on an FBSSerialQueue block, not
   looked into further; ios-apollo saw the same and moved its appex aside). Idle total ~33 %, backboardd ~21 %.
+- **Kernel patch 0127 (2026-11-01, user chose "find the hot code"):** the sampler prints `SMPIMG name address path` for images
+  outside the shared cache, so backboardd's samples in SweetMetal2 (6635 symbols) can be named. Turnip's dylib is
+  stripped (6 exports): only its share is visible until it is rebuilt with symbols.
