@@ -653,3 +653,4 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   +[PRSPosterPath _temporaryDirectoryURLWithContainerPath:...] ("unexpected mkdtemp result"; the path is no real
   container), AegirPoster 24 crashes (0 on 0124; link to 0125 not proven).
   **Kernel patch 0126:** only those three extensions get the path; everyone else ENOENT as on 0124.
+- **0126 on the phone (2026-11-01):** wallpaper shows on every boot since 0124 (user). Results in work/tmp/usb-0126.log.
