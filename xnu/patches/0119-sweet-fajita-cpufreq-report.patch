@@ -12,10 +12,10 @@ index e01d4bf..4646789 100644
  bsd/dev/unix_startup.c			standard
 diff --git a/bsd/dev/sweet_cpufreq.c b/bsd/dev/sweet_cpufreq.c
 new file mode 100644
-index 0000000..1c0b09b
+index 0000000..83a4fb8
 --- /dev/null
 +++ b/bsd/dev/sweet_cpufreq.c
-@@ -0,0 +1,151 @@
+@@ -0,0 +1,152 @@
 +/*
 + * SWEET (fajita): CPU clock report, read-only (0119).
 + *
@@ -49,6 +49,7 @@ index 0000000..1c0b09b
 +void sweet_cpufreq_init(void);
 +extern bool sweet_board_is(const char *want);
 +extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern kern_return_t kernel_thread_start(thread_continue_t, void *, thread_t *);
 +extern processor_t cpu_to_processor(int cpu);
 +extern processor_t thread_bind(processor_t processor);	/* kern/sched_prim.h, MACH_KERNEL_PRIVATE there */
 +#ifndef PROCESSOR_NULL
@@ -149,7 +150,7 @@ index 0000000..1c0b09b
 +	delay(35 * 1000000);
 +	cf_tables();
 +	cf_measure();
-+	thread_terminate(current_thread());
++	/* Returning ends the kernel thread. */
 +}
 +
 +void
