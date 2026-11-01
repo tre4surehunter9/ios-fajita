@@ -629,3 +629,7 @@ fall under its licence, and a built SweetMetal2.bundle links it statically (GPL-
   ({enforce_xpc_cache_code_signing: {Enabled: false}}, XML, 0:0 644) + delete LaunchServices'
   com.apple.LaunchServices-*.csstore* (containers/Data/InternalDaemon/*/Library/Caches and System/*) so lsd reseeds;
   boot 1 0124 + extfix, boot 2 0124: wallpaper + widgets expected.
+- **0124 + phone/extfix on the phone (2026-11-01):** `lsd asks __mac_syscall("AMFI", 0x60): boot-arg state 0x86`;
+  old store (com.apple.LaunchServices-4035-v2.csstore, 4 MB, in InternalDaemon/EBAC5B3C-...) deleted, ExtensionKit
+  flag written. The reseed registered the extensions: CollectionsPoster, AegirPoster, PhotosPosterProvider,
+  WeatherPoster, the widget extensions all exec for the first time.
