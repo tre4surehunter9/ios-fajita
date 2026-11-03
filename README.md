@@ -130,6 +130,7 @@ The first boot builds the LaunchServices database, which takes a few minutes on 
 - **GPU firmware:** the boot image carries the A630 SQE/GMU firmware and the zap shader (`mkpayload.py --gpufw DIR`; the files come from postmarketOS / linux-firmware, not from git), plus `sweetgpu=3 sweetmtl=2` in the boot-args.
 - **Metal for CoreAnimation:** `SweetMetal2.bundle` (built by the `metal2` workflow) goes to `/System/Library/Extensions`. Either boot once with `mkpayload.py --run mtl2install`, or write it into the root image on the PC with `tools/sweet-root-apps.py --metal2 mtl2install`.
 - **All the apps:** `tools/sweet-root-apps.py` copies the 32 removable apps from `/private/var/staged_system_apps` to `/Applications` and makes LaunchServices reseed (the first-boot data migration that installs them on a real phone is skipped here).
+- **All of the next two in one:** boot once with `mkpayload.py --run sweetsetup` on a fresh root, then reboot. A marker file makes later runs do nothing.
 - **Wallpapers and widgets:** boot once with `mkpayload.py --run extfix` on a kernel with patch 0124. It sets the ExtensionKit flag and deletes LaunchServices' database, which then reseeds with the extensions.
 - **Quieter background:** boot once with `mkpayload.py --run quiet` (the `phone` workflow builds it). It takes voicemail, FairPlay and ReportCrash out of launchd's job list on the phone; the original stays as `launchd.plist.pre-quiet`, and `unquiet` puts jobs back.
 
