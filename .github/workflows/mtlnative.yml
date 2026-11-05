@@ -50,6 +50,7 @@ jobs:
           git init -q chlorophyll
           git -C chlorophyll fetch -q --depth 1 https://github.com/ry-diffusion/Chlorophyll $CHLOROPHYLL_SHA
           git -C chlorophyll checkout -q FETCH_HEAD
+          python3 phone/mtlnative/fix-probes.py chlorophyll
           curl -fsSL -o bergamota.patch "https://raw.githubusercontent.com/ry-diffusion/Bergamota/$BERGAMOTA_SHA/gpu/eagl/mesa/bergamota-mesa-25.0.7.patch"
           git -C mesa apply ../bergamota.patch
           for p in $PATCHES; do git -C mesa apply "../chlorophyll/patches/$p.patch" && echo "applied $p"; done
