@@ -181,6 +181,7 @@ static int gem_new(struct drm_msm_gem_new *rq)
 		g_top_handle = (uint32_t)reply.handle;
 	}
 	rq->handle = (uint32_t)reply.handle;
+	printf("DRM new h=%u iova=0x%llx size=0x%llx\n", rq->handle, (unsigned long long)iova, (unsigned long long)size);
 	return 0;
 }
 
@@ -190,6 +191,7 @@ static int gem_close(uint32_t handle)
 		return -EINVAL;
 	}
 	struct bo *b = &g_bo[handle];
+	printf("DRM close h=%u iova=0x%llx size=0x%llx fence=%u\n", handle, (unsigned long long)b->iova, (unsigned long long)b->size, b->fence);
 	if (b->map != 0 && b->surface == NULL) {
 		IOConnectUnmapMemory64(g_conn, handle, mach_task_self(), b->map);
 	}
@@ -213,10 +215,22 @@ static uint64_t rel_ns(const struct drm_msm_timespec *t)
 
 static char g_wait_error[96];
 
+static uint64_t mono_ms(void)
+{
+	struct timespec t;
+	clock_gettime(CLOCK_MONOTONIC, &t);
+	return (uint64_t)t.tv_sec * 1000 + (uint64_t)t.tv_nsec / 1000000;
+}
+
 static int wait_fence(uint32_t fence, uint64_t ns)
 {
 	struct NativeAdrenoAbiWaitFence w = { .fence = fence, .timeout_ns = ns };
+	uint64_t t0 = mono_ms();
 	int r = fence == 0 ? 0 : call(NativeAdrenoMethodWaitFence, &w, sizeof(w), NULL, 0);
+	uint64_t took = mono_ms() - t0;
+	if (took >= 30) {
+		printf("DRM wait fence=%u: %llu ms, result %d\n", fence, (unsigned long long)took, r);
+	}
 	if (r != 0 && ns != 0) {
 		snprintf(g_wait_error, sizeof(g_wait_error), "fence %u, %llu ns: error %d", fence, (unsigned long long)ns, r);
 	}
@@ -351,6 +365,12 @@ static int gem_submit(struct drm_msm_gem_submit *rq)
 	g_last_fence = fence;
 	rq->fence = fence;
 	rq->fence_fd = -1;
+	uint64_t ib_bytes = 0;
+	for (uint32_t i = 0; i < rq->nr_cmds; i++) {
+		ib_bytes += cmds[i].size;
+	}
+	printf("DRM submit fence=%u cmds=%u ib=%llu bos=%u t=%llu\n", fence, rq->nr_cmds, (unsigned long long)ib_bytes, rq->nr_bos,
+	    (unsigned long long)mono_ms());
 	return 0;
 }
 
@@ -538,6 +558,9 @@ EXPORT int sweet_drm_surface_bo(int fd, struct rwa_sbo *io)
 		if (reply.handle > g_top_handle) {
 			g_top_handle = (uint32_t)reply.handle;
 		}
+		printf("DRM import h=%llu iova=0x%llx size=0x%llx surface=%u %ux%u row=%zu fmt=0x%x\n", (unsigned long long)reply.handle,
+		    (unsigned long long)iova, (unsigned long long)size, io->surface_id, (unsigned)IOSurfaceGetWidth(surface),
+		    (unsigned)IOSurfaceGetHeight(surface), IOSurfaceGetBytesPerRow(surface), IOSurfaceGetPixelFormat(surface));
 		io->handle = (uint32_t)reply.handle;
 		io->size = size;
 		io->iova = iova;
