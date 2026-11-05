@@ -51,18 +51,42 @@ static void record(id values, id key, const void *p, NSUInteger type)
 	}
 }
 
-static IMP orig_name, orig_index, orig_range, orig_desc, orig_named;
+static IMP orig_desc, orig_named, orig_set_values;
+static unsigned g_recorded;
+
+/*
+ * Which class holds the setters is Metal's business (it also has MTLFunctionConstantValuesInternal), so each class that has its
+ * own implementation is hooked, with its original kept here. A class is found by walking up from the receiver.
+ */
+enum { MAX_HOOKED = 12 };
+struct hooked { Class cls; SEL sel; IMP orig; };
+static struct hooked g_hooked[MAX_HOOKED];
+static unsigned g_nhooked;
+
+static IMP original(id self, SEL s)
+{
+	for (Class c = object_getClass(self); c != Nil; c = class_getSuperclass(c)) {
+		for (unsigned i = 0; i < g_nhooked; i++) {
+			if (g_hooked[i].cls == c && g_hooked[i].sel == s) {
+				return g_hooked[i].orig;
+			}
+		}
+	}
+	return NULL;
+}
 
 static void hook_name(id self, SEL s, const void *v, NSUInteger type, NSString *name)
 {
 	record(self, name, v, type);
-	((void (*)(id, SEL, const void *, NSUInteger, NSString *))orig_name)(self, s, v, type, name);
+	g_recorded++;
+	((void (*)(id, SEL, const void *, NSUInteger, NSString *))original(self, s))(self, s, v, type, name);
 }
 
 static void hook_index(id self, SEL s, const void *v, NSUInteger type, NSUInteger index)
 {
 	record(self, @(index), v, type);
-	((void (*)(id, SEL, const void *, NSUInteger, NSUInteger))orig_index)(self, s, v, type, index);
+	g_recorded++;
+	((void (*)(id, SEL, const void *, NSUInteger, NSUInteger))original(self, s))(self, s, v, type, index);
 }
 
 static void hook_range(id self, SEL s, const void *v, NSUInteger type, NSRange range)
@@ -71,7 +95,30 @@ static void hook_range(id self, SEL s, const void *v, NSUInteger type, NSRange r
 	for (NSUInteger i = 0; i < range.length; i++) {
 		record(self, @(range.location + i), p + i * type_size(type), type);
 	}
-	((void (*)(id, SEL, const void *, NSUInteger, NSRange))orig_range)(self, s, v, type, range);
+	g_recorded++;
+	((void (*)(id, SEL, const void *, NSUInteger, NSRange))original(self, s))(self, s, v, type, range);
+}
+
+/* A copy keeps what was recorded: the descriptor's setter may well copy. */
+static id hook_copy(id self, SEL s, NSZone *zone)
+{
+	id c = ((id (*)(id, SEL, NSZone *))original(self, s))(self, s, zone);
+	NSMutableDictionary *d = recorded(self, NO);
+	if (c != nil && c != self && d != nil) {
+		@synchronized (d) {
+			objc_setAssociatedObject(c, kValues, [[d mutableCopy] autorelease], OBJC_ASSOCIATION_RETAIN);
+		}
+	}
+	return c;
+}
+
+/* And the descriptor remembers the object it was handed. */
+static const void *const kGiven = &kGiven;
+
+static void hook_set_values(id self, SEL s, id values)
+{
+	objc_setAssociatedObject(self, kGiven, values, OBJC_ASSOCIATION_RETAIN);
+	((void (*)(id, SEL, id))orig_set_values)(self, s, values);
 }
 
 /* The plain function, plus the values; everything else goes to the function. */
@@ -139,7 +186,15 @@ static void report_metal(id self, SEL s, IMP orig, id arg)
 static id hook_desc(id self, SEL s, MTLFunctionDescriptor *desc, NSError **error)
 {
 	report_metal(self, s, orig_desc, desc);
-	return specialized(self, desc.name, desc.constantValues, error);
+	id given = objc_getAssociatedObject(desc, kGiven);
+	id values = given != nil ? given : desc.constantValues;
+	static dispatch_once_t once;
+	dispatch_once(&once, ^{
+		printf("bg_specialize: %s: descriptor %s, values %s (given %s), %lu recorded here, %u setter calls so far\n",
+		    desc.name.UTF8String, class_getName(object_getClass(desc)), values ? class_getName(object_getClass(values)) : "nil",
+		    given ? "yes" : "no", (unsigned long)(values ? recorded(values, NO).count : 0), g_recorded);
+	});
+	return specialized(self, desc.name, values, error);
 }
 
 /* -newFunctionWithName:constantValues:error: has three arguments; the report above is for the descriptor call. */
@@ -158,16 +213,41 @@ static IMP swap_imp(Class c, SEL s, IMP with)
 	return method_setImplementation(m, with);
 }
 
-__attribute__((constructor)) static void bg_specialize_install(void)
+/* Each class in the list with an implementation of its own gets the hook. */
+static void hook_class(Class c, SEL s, IMP with)
 {
-	Class v = NSClassFromString(@"MTLFunctionConstantValues"), l = NSClassFromString(@"_MTLLibrary");
-	if (v == Nil || l == Nil) {
-		printf("bg_specialize: MTLFunctionConstantValues %p, _MTLLibrary %p: not installed\n", v, l);
+	Method m = c != Nil ? class_getInstanceMethod(c, s) : NULL;
+	if (m == NULL || g_nhooked == MAX_HOOKED) {
 		return;
 	}
-	orig_name = swap_imp(v, @selector(setConstantValue:type:withName:), (IMP)hook_name);
-	orig_index = swap_imp(v, @selector(setConstantValue:type:atIndex:), (IMP)hook_index);
-	orig_range = swap_imp(v, @selector(setConstantValues:type:withRange:), (IMP)hook_range);
+	if (method_getImplementation(m) == with) {
+		return;                 /* inherited from a class already done */
+	}
+	/* the class that really owns it: the original is found by walking up, so record that one */
+	Class owner = c;
+	for (Class up = class_getSuperclass(c); up != Nil && class_getInstanceMethod(up, s) == m; up = class_getSuperclass(up)) {
+		owner = up;
+	}
+	g_hooked[g_nhooked++] = (struct hooked){ owner, s, method_setImplementation(m, with) };
+	printf("bg_specialize: hooked -[%s %s]\n", class_getName(owner), sel_getName(s));
+}
+
+__attribute__((constructor)) static void bg_specialize_install(void)
+{
+	Class l = NSClassFromString(@"_MTLLibrary"), desc = NSClassFromString(@"MTLFunctionDescriptor");
+	const char *const names[] = { "MTLFunctionConstantValuesInternal", "_MTLFunctionConstantValues", "MTLFunctionConstantValues" };
+	if (l == Nil || desc == Nil) {
+		printf("bg_specialize: _MTLLibrary %p, MTLFunctionDescriptor %p: not installed\n", l, desc);
+		return;
+	}
+	for (unsigned i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+		Class v = objc_getClass(names[i]);
+		hook_class(v, @selector(setConstantValue:type:withName:), (IMP)hook_name);
+		hook_class(v, @selector(setConstantValue:type:atIndex:), (IMP)hook_index);
+		hook_class(v, @selector(setConstantValues:type:withRange:), (IMP)hook_range);
+		hook_class(v, @selector(copyWithZone:), (IMP)hook_copy);
+	}
+	orig_set_values = swap_imp(desc, @selector(setConstantValues:), (IMP)hook_set_values);
 	orig_desc = swap_imp(l, @selector(newFunctionWithDescriptor:error:), (IMP)hook_desc);
 	orig_named = swap_imp(l, @selector(newFunctionWithName:constantValues:error:), (IMP)hook_named);
 }
