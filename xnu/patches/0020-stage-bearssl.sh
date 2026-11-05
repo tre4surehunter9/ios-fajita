@@ -9,7 +9,7 @@ trap 'rm -rf "$bearssl_tmp"' EXIT
 git init -q "$bearssl_tmp"
 # bearssl.org's git service goes down at times (HTTP 502). A mirror is as good: the commit hash below is checked.
 git -C "$bearssl_tmp" fetch -q --depth 1 https://www.bearssl.org/git/BearSSL "$bearssl_sha" ||
-    git -C "$bearssl_tmp" fetch -q --depth 1 https://github.com/ryanwoodsmall/bearssl-mirror "$bearssl_sha" ||
+    git -C "$bearssl_tmp" fetch -q --depth 1 https://github.com/ckdur/bearssl "$bearssl_sha" ||
     git -C "$bearssl_tmp" fetch -q --depth 1 https://github.com/webcpporg/bearssl "$bearssl_sha"
 git -C "$bearssl_tmp" checkout -q FETCH_HEAD
 [[ "$(git -C "$bearssl_tmp" rev-parse HEAD)" == "$bearssl_sha" ]]
