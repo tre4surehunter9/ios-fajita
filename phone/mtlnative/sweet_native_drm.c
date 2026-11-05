@@ -211,10 +211,23 @@ static uint64_t rel_ns(const struct drm_msm_timespec *t)
 	return ns > 0 ? (uint64_t)ns : 0;
 }
 
+static char g_wait_error[96];
+
 static int wait_fence(uint32_t fence, uint64_t ns)
 {
 	struct NativeAdrenoAbiWaitFence w = { .fence = fence, .timeout_ns = ns };
-	return fence == 0 ? 0 : call(NativeAdrenoMethodWaitFence, &w, sizeof(w), NULL, 0);
+	int r = fence == 0 ? 0 : call(NativeAdrenoMethodWaitFence, &w, sizeof(w), NULL, 0);
+	if (r != 0 && ns != 0) {
+		snprintf(g_wait_error, sizeof(g_wait_error), "fence %u, %llu ns: error %d", fence, (unsigned long long)ns, r);
+	}
+	return r;
+}
+
+/* What the last wait that failed was answered, for bgmtl.m's log. */
+EXPORT void sweet_drm_take_wait_error(char *buf, size_t size)
+{
+	snprintf(buf, size, "%s", g_wait_error);
+	g_wait_error[0] = 0;
 }
 
 static int get_param(struct drm_msm_param *p)
