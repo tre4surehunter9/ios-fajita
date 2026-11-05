@@ -12,6 +12,7 @@
  * Every "device fd" is a dup of /dev/null and means the one connection of this process.
  */
 #include <IOKit/IOKitLib.h>
+#include <IOSurface/IOSurfaceRef.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <mach/mach.h>
@@ -54,6 +55,7 @@ struct bo {
 	uint64_t iova, size;
 	uint32_t fence;                 /* the last submit that used it */
 	uint64_t map;                   /* CPU address, 0 if not mapped */
+	IOSurfaceRef surface;           /* an import: held until the BO closes; map is the surface's own mapping */
 };
 struct extent { uint64_t base, size; };
 
@@ -63,7 +65,7 @@ static struct NativeAdrenoAbiDeviceInfo g_info;
 static struct bo *g_bo;                 /* index = handle */
 static uint64_t g_va_next;
 static struct extent g_free[MAX_FREE];
-static uint32_t g_nfree, g_last_fence;
+static uint32_t g_nfree, g_last_fence, g_top_handle;
 
 static int kerr(kern_return_t kr)
 {
@@ -175,6 +177,9 @@ static int gem_new(struct drm_msm_gem_new *rq)
 		return r;
 	}
 	g_bo[reply.handle] = (struct bo){ .iova = iova, .size = size };
+	if (reply.handle > g_top_handle) {
+		g_top_handle = (uint32_t)reply.handle;
+	}
 	rq->handle = (uint32_t)reply.handle;
 	return 0;
 }
@@ -185,12 +190,15 @@ static int gem_close(uint32_t handle)
 		return -EINVAL;
 	}
 	struct bo *b = &g_bo[handle];
-	if (b->map != 0) {
+	if (b->map != 0 && b->surface == NULL) {
 		IOConnectUnmapMemory64(g_conn, handle, mach_task_self(), b->map);
 	}
 	struct NativeAdrenoAbiBoFree f = { handle };
 	int r = call(NativeAdrenoMethodBoFree, &f, sizeof(f), NULL, 0);
 	va_free(b->iova, b->size);
+	if (b->surface != NULL) {
+		CFRelease(b->surface);
+	}
 	memset(b, 0, sizeof(*b));
 	return r;
 }
@@ -408,6 +416,11 @@ EXPORT void *sweet_drm_mmap(int fd, size_t len, uint64_t offset)
 	(void)fd;
 	uint32_t handle = (uint32_t)offset;
 	pthread_mutex_lock(&g_lock);
+	if (handle != 0 && handle <= MAX_BOS && g_bo[handle].surface != NULL) {
+		void *base = (void *)(uintptr_t)g_bo[handle].map;       /* the kernel has no CPU map for imports */
+		pthread_mutex_unlock(&g_lock);
+		return base;
+	}
 	struct NativeAdrenoAbiBoCpuMap m = { handle };
 	struct NativeAdrenoAbiBoCpuMapReply reply = { 0 };
 	mach_vm_address_t addr = 0;
@@ -431,10 +444,12 @@ EXPORT int sweet_drm_munmap(void *addr, size_t len)
 	uint64_t a = (uint64_t)(uintptr_t)addr;
 	int r = -EINVAL;
 	pthread_mutex_lock(&g_lock);
-	for (uint32_t h = 1; h <= MAX_BOS && r != 0; h++) {
+	for (uint32_t h = 1; h <= g_top_handle && r != 0; h++) {
 		if (g_bo[h].map == a) {
-			IOConnectUnmapMemory64(g_conn, h, mach_task_self(), a);
-			g_bo[h].map = 0;
+			if (g_bo[h].surface == NULL) {
+				IOConnectUnmapMemory64(g_conn, h, mach_task_self(), a);
+				g_bo[h].map = 0;
+			}
 			r = 0;
 		}
 	}
@@ -442,9 +457,118 @@ EXPORT int sweet_drm_munmap(void *addr, size_t len)
 	return r;
 }
 
-/* IOSurfaces come later, with the render path into CoreAnimation; this test build does not use them. */
-EXPORT int sweet_drm_surface_bo(int fd, void *io) { (void)fd; (void)io; return -ENOSYS; }
-EXPORT int sweet_drm_bo_sync(int fd, uint32_t h, uint64_t off, uint64_t size) { (void)fd; (void)h; (void)off; (void)size; return 0; }
+/* air_metal.c's struct rwa_sbo: surface_id in, the rest out. */
+struct rwa_sbo {
+	uint32_t surface_id, handle;
+	uint64_t size, iova;
+	uint32_t offset, bytes_per_row, width, height, pixel_format, planes;
+};
+
+/*
+ * An IOSurface as a BO: NativeAdreno pins the surface's pages at this process's own mapping of it (BoImport). The GPU maps
+ * them non-cacheable and the CPU keeps its cached view, so sweet_drm_bo_sync cleans and invalidates around CPU use.
+ */
+EXPORT int sweet_drm_surface_bo(int fd, struct rwa_sbo *io)
+{
+	(void)fd;
+	IOSurfaceRef surface = IOSurfaceLookup(io->surface_id);
+	if (surface == NULL) {
+		return -ENOENT;
+	}
+	uintptr_t base = (uintptr_t)IOSurfaceGetBaseAddress(surface);
+	uint64_t size = (IOSurfaceGetAllocSize(surface) + 4095) & ~4095ull;
+	pthread_mutex_lock(&g_lock);
+	int r = connect_once();
+	struct NativeAdrenoAbiBoImport in = { .address = base, .bytes = size };
+	struct NativeAdrenoAbiBoAllocReply reply = { 0 };
+	if (r == 0) {
+		r = base != 0 && (base & 4095) == 0 && size != 0 ? 0 : -EINVAL;
+	}
+	if (r == 0) {
+		r = call(NativeAdrenoMethodBoImport, &in, sizeof(in), &reply, sizeof(reply));
+	}
+	if (r == 0 && (reply.handle == 0 || reply.handle > MAX_BOS)) {
+		r = -ENOSPC;
+	}
+	uint64_t iova = 0;
+	if (r == 0) {
+		iova = va_alloc(size);
+		struct NativeAdrenoAbiBoMap map = { .handle = reply.handle, .iova = iova, .permissions = 3, .writeback = 0,
+			.shareability = 2 };
+		struct NativeAdrenoAbiBoMapReply mapped = { 0 };
+		r = iova ? call(NativeAdrenoMethodBoMap, &map, sizeof(map), &mapped, sizeof(mapped)) : -ENOSPC;
+		if (r) {
+			struct NativeAdrenoAbiBoFree f = { reply.handle };
+			call(NativeAdrenoMethodBoFree, &f, sizeof(f), NULL, 0);
+			if (iova) {
+				va_free(iova, size);
+			}
+		}
+	}
+	if (r == 0) {
+		g_bo[reply.handle] = (struct bo){ .iova = iova, .size = size, .map = base, .surface = surface };
+		if (reply.handle > g_top_handle) {
+			g_top_handle = (uint32_t)reply.handle;
+		}
+		io->handle = (uint32_t)reply.handle;
+		io->size = size;
+		io->iova = iova;
+		io->offset = 0;
+		io->bytes_per_row = (uint32_t)IOSurfaceGetBytesPerRow(surface);
+		io->width = (uint32_t)IOSurfaceGetWidth(surface);
+		io->height = (uint32_t)IOSurfaceGetHeight(surface);
+		io->pixel_format = IOSurfaceGetPixelFormat(surface);
+		io->planes = (uint32_t)IOSurfaceGetPlaneCount(surface);
+	} else {
+		CFRelease(surface);
+		printf("sweet_native_drm: IOSurface %u import failed: %d\n", io->surface_id, r);
+	}
+	pthread_mutex_unlock(&g_lock);
+	return r;
+}
+
+EXPORT int sweet_drm_bo_sync(int fd, uint32_t h, uint64_t off, uint64_t size)
+{
+	(void)fd;
+	if (h == 0 || h > MAX_BOS) {
+		return -EINVAL;
+	}
+	pthread_mutex_lock(&g_lock);
+	uintptr_t base = g_bo[h].surface != NULL ? (uintptr_t)g_bo[h].map : 0;
+	uint64_t total = g_bo[h].size;
+	pthread_mutex_unlock(&g_lock);
+	if (base == 0 || off >= total) {
+		return 0;                       /* our own BOs are write-combining: nothing to clean */
+	}
+	uint64_t n = size == 0 || size > total - off ? total - off : size;
+	for (uintptr_t a = (base + off) & ~(uintptr_t)63; a < base + off + n; a += 64) {
+		__asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+	}
+	__asm__ volatile("dsb sy" ::: "memory");
+	return 0;
+}
+
+/* bgmtl.m's struct bg_gpu_info: only flags & 3 is read (bit0 ready, bit1 lost). */
+struct bg_gpu_info { uint32_t abi_version, flags, gpu_id, chip_id; uint64_t va_start, va_size; uint32_t last_fence, abi_minor; };
+
+EXPORT int sweet_drm_info(int fd, struct bg_gpu_info *out)
+{
+	(void)fd;
+	pthread_mutex_lock(&g_lock);
+	int r = connect_once();
+	if (r == 0) {
+		out->abi_version = NativeAdrenoAbiVersion;
+		out->flags = 1;
+		out->gpu_id = 630;
+		out->chip_id = g_info.chip_id;
+		out->va_start = g_info.va_start;
+		out->va_size = g_info.va_size;
+		out->last_fence = g_last_fence;
+		out->abi_minor = 2;
+	}
+	pthread_mutex_unlock(&g_lock);
+	return r;
+}
 
 EXPORT int drmOpenWithType(const char *name, const char *busid, int type)
 {
