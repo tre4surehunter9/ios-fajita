@@ -127,6 +127,9 @@ int main(void)
 	bad |= run("bgmtl_probe", DIR_ "bg_kernels.metallib", NULL);
 	bad |= run("bgmtl_render_probe", DIR_ "bg_kernels.metallib", DIR_ "bg_render.metallib");
 	bad |= run("bgmtl_quad_probe", DIR_ "bg_quad.metallib", NULL);
+	setenv("BG_NOADD", "1", 1);
+	bad |= run("bgmtl_carenderer_probe", DIR_ "ca-out", NULL);
+	unsetenv("BG_NOADD");
 	bad |= run("bgmtl_carenderer_probe", DIR_ "ca-out", NULL);
 	printf("MTLTEST %s\n", bad ? "FAIL" : "PASS");
 	fflush(stdout);

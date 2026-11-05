@@ -20,7 +20,12 @@ edit(p, 'if (!all || !add) { printf("no Metal registration entry points\\n"); re
      'printf("MTLCopyAllDevices %s, MTLAddDevice %s, MTLCreateSystemDefaultDevice %s\\n", all ? "found" : "absent", add ? "found" : "absent", '
      'dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice") ? "found" : "absent");')
 edit(p, 'printf("devices before: %lu\\n", (unsigned long)[all() count]);', 'if (all) printf("devices before: %lu\\n", (unsigned long)[all() count]);')
-edit(p, 'add(dev);\n', 'if (add) add(dev);\n')
+# MTLAddDevice asserts until Metal has enumerated once. BG_NOADD: the same run with the device never registered.
+edit(p, 'add(dev);\n',
+     'id<MTLDevice> firstdev = ((id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice"))();\n'
+     '      printf("before registering, system default device: %s\\n", firstdev ? [[firstdev name] UTF8String] : "nil");\n'
+     '      printf("registering: %s\\n", getenv("BG_NOADD") ? "no" : "yes");\n'
+     '      if (add && !getenv("BG_NOADD")) add(dev);\n')
 edit(p, 'id<MTLDevice> d = ((id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice"))();',
      'id<MTLDevice> sysdev = ((id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice"))();\n'
      '      printf("system default device: %s\\n", sysdev ? [[sysdev name] UTF8String] : "nil");\n'
