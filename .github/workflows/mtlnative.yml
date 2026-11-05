@@ -20,7 +20,7 @@ env:
   MESA_TAG: mesa-25.0.7
   LIBDRM_TAG: libdrm-2.4.124
   CHLOROPHYLL_SHA: 787338fc7c297f54e2000bca02f4fa36f1154c5a
-  BERGAMOTA_SHA: 814b9a82742d48e9b60c88800f81233f3c6558fd
+  BERGAMOTA_SHA: 37a7a7a917fc09945ed2f7d1ae68b84d4525b4cb
   PATCHES: >-
     air-frontend air-ir3 ir3-round-default ir3-shift-split ir3-ssbo-subdword
     fd-bo-cache-keep fd-bo-cache-skip-busy fd-bo-new-purge-retry fd6-fb-barrier-reorder
