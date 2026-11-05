@@ -1,0 +1,158 @@
+name: mtlnative
+
+# The native Metal route's first phone test: Mesa 25.0.7 freedreno + Chlorophyll's AIR translator and libbgair
+# (fetched at pinned commits, not copied into this repo) over phone/mtlnative/sweet_native_drm.c, for iOS 16 arm64,
+# plus mtltest with everything embedded. Recipe as Chlorophyll's build-host.sh + build-ios.sh.
+# Artifact "mtlnative": mtltest, the libraries, build logs.
+on:
+  push:
+    branches: [fajita]
+    paths:
+      - "phone/mtlnative/**"
+      - ".github/workflows/mtlnative.yml"
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: GitHub runner image
+        default: macos-15
+
+env:
+  MESA_TAG: mesa-25.0.7
+  LIBDRM_TAG: libdrm-2.4.124
+  CHLOROPHYLL_SHA: 787338fc7c297f54e2000bca02f4fa36f1154c5a
+  BERGAMOTA_SHA: 814b9a82742d48e9b60c88800f81233f3c6558fd
+  PATCHES: >-
+    air-frontend air-ir3 ir3-round-default ir3-shift-split ir3-ssbo-subdword
+    fd-bo-cache-keep fd-bo-cache-skip-busy fd-bo-new-purge-retry fd6-fb-barrier-reorder
+  RUNDIR: /private/var/tmp/sweetrun
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner || 'macos-15' }}
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Deps
+        run: |
+          brew install ninja bison flex pkgconf
+          python3 -m venv venv
+          venv/bin/pip install -q meson mako pyyaml packaging setuptools lxml
+          XC=$(ls -d /Applications/Xcode_*.app | sort -V | tail -1)
+          sudo xcode-select -s "$XC"
+          xcodebuild -version
+
+      - name: Sources
+        run: |
+          set -e
+          git clone -q --depth 1 -b $MESA_TAG https://gitlab.freedesktop.org/mesa/mesa.git mesa
+          git clone -q --depth 1 -b $LIBDRM_TAG https://gitlab.freedesktop.org/mesa/drm.git libdrm
+          git init -q chlorophyll
+          git -C chlorophyll fetch -q --depth 1 https://github.com/ry-diffusion/Chlorophyll $CHLOROPHYLL_SHA
+          git -C chlorophyll checkout -q FETCH_HEAD
+          curl -fsSL -o bergamota.patch "https://raw.githubusercontent.com/ry-diffusion/Bergamota/$BERGAMOTA_SHA/gpu/eagl/mesa/bergamota-mesa-25.0.7.patch"
+          git -C mesa apply ../bergamota.patch
+          for p in $PATCHES; do git -C mesa apply "../chlorophyll/patches/$p.patch" && echo "applied $p"; done
+          mkdir -p mesa/src/compiler/air
+          cp chlorophyll/air/* mesa/src/compiler/air/
+
+      - name: libdrm stand-in
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          mkdir -p drm pc out
+          $(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK -O2 -g -Wall -fvisibility=hidden \
+            -dynamiclib -install_name $RUNDIR/libdrm.2.dylib -current_version 2.4.0 -compatibility_version 2.0.0 \
+            -I phone/turnip -I phone/include -I mesa/include/drm-uapi -I libdrm -I libdrm/include/drm \
+            phone/mtlnative/sweet_native_drm.c -o drm/libdrm.2.dylib -framework IOKit -framework CoreFoundation
+          ln -sf libdrm.2.dylib drm/libdrm.dylib
+          cat > pc/libdrm.pc <<EOP
+          Name: libdrm
+          Description: SweetGPU stand-in (phone/mtlnative)
+          Version: 2.4.124
+          Cflags: -I$PWD/libdrm/include/drm -I$PWD/libdrm
+          Libs: -L$PWD/drm -ldrm
+          EOP
+          sed -i '' 's/^          //' pc/libdrm.pc
+
+      - name: Build libbgair
+        run: |
+          set -e
+          export PATH=$PWD/venv/bin:$(brew --prefix bison)/bin:$(brew --prefix flex)/bin:$PATH
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          flags="'-target', 'arm64-apple-ios16.0', '-isysroot', '$SDK', '-fstack-protector-strong'"
+          cat > ios16.cross <<CROSS
+          [binaries]
+          c = '$(xcrun --sdk iphoneos --find clang)'
+          cpp = '$(xcrun --sdk iphoneos --find clang++)'
+          objc = '$(xcrun --sdk iphoneos --find clang)'
+          ar = '$(xcrun --sdk iphoneos --find ar)'
+          strip = '$(xcrun --sdk iphoneos --find strip)'
+          ranlib = '$(xcrun --sdk iphoneos --find ranlib)'
+          bison = '$(brew --prefix bison)/bin/bison'
+          pkg-config = '$(command -v pkg-config)'
+          [host_machine]
+          system = 'darwin'
+          subsystem = 'ios'
+          cpu_family = 'aarch64'
+          cpu = 'arm64'
+          endian = 'little'
+          [properties]
+          needs_exe_wrapper = true
+          [built-in options]
+          pkg_config_path = ['$PWD/pc']
+          c_args = [$flags]
+          cpp_args = [$flags]
+          objc_args = [$flags]
+          c_link_args = [$flags]
+          cpp_link_args = [$flags]
+          objc_link_args = [$flags]
+          CROSS
+          sed -i '' 's/^          //' ios16.cross
+          unset CFLAGS CXXFLAGS CPPFLAGS LDFLAGS
+          meson setup build mesa --cross-file ios16.cross --buildtype=release -Dgallium-drivers=softpipe,freedreno \
+            -Dfreedreno-kmds=msm -Dgallium-xa=disabled -Dtools= -Dvulkan-drivers= -Dllvm=disabled -Dglx=disabled \
+            -Degl=disabled -Dgbm=disabled -Dplatforms= -Dosmesa=false -Dopengl=true -Dgles1=disabled -Dgles2=enabled \
+            -Dshared-glapi=enabled -Dvalgrind=disabled -Dlibunwind=disabled -Dzstd=disabled -Dxmlconfig=disabled \
+            -Dbuild-tests=false -Dglvnd=disabled -Dlmsensors=disabled -Dgallium-opencl=disabled -Dgallium-rusticl=false \
+            -Dshader-cache=disabled -Dprefix=/ > configure.log 2>&1 || { tail -50 configure.log; exit 1; }
+          ninja -C build src/gallium/drivers/freedreno/libbgair.dylib > build.log 2>&1 ||
+            { grep -E "error:|FAILED|Undefined|ld:" build.log | head -60; exit 1; }
+          ls -la build/src/gallium/drivers/freedreno/libbgair.dylib
+
+      - name: Build mtltest
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK"
+          P=stage; mkdir -p $P
+          cp build/src/gallium/drivers/freedreno/libbgair.dylib $P/
+          xcrun --sdk iphoneos strip -x $P/libbgair.dylib
+          install_name_tool -id $RUNDIR/libbgair.dylib $P/libbgair.dylib
+          cp drm/libdrm.2.dylib $P/
+          for t in bgair_test bgair_vertex_test; do
+            $CC -O2 -Dmain=test_main -dynamiclib -install_name $RUNDIR/$t.dylib -I chlorophyll/air chlorophyll/test/$t.c \
+              $P/libbgair.dylib -o $P/$t.dylib
+          done
+          for m in bg_kernels bg_render; do
+            xcrun -sdk iphoneos metal -mios-version-min=16.0 -c chlorophyll/test/$m.metal -o $m.air
+            xcrun -sdk iphoneos metallib $m.air -o $P/$m.metallib
+          done
+          codesign -f -s - $P/*.dylib
+          python3 phone/mtlnative/pack.py mtl.blob $P/libdrm.2.dylib $P/libbgair.dylib $P/bgair_test.dylib \
+            $P/bgair_vertex_test.dylib $P/bg_kernels.metallib $P/bg_render.metallib
+          $CC -O2 -Wall -o out/mtltest phone/mtlnative/mtltest.c phone/mtlnative/blob.S -lcompression
+          codesign -f -s - out/mtltest
+          cp $P/* out/
+          otool -L out/libbgair.dylib | head -12
+          ls -la out
+          shasum -a 256 out/* | tee out/SHA256SUMS
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mtlnative
+          path: |
+            out/
+            configure.log
+            build.log
