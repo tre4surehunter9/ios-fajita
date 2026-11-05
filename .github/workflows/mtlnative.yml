@@ -138,7 +138,8 @@ jobs:
           # the Metal device, one library the probes share (one copy of its classes per process)
           OBJC="-O1 -g -fno-objc-arc -Wall -Wno-deprecated-declarations -I chlorophyll/air"
           $CC $OBJC -c chlorophyll/src/bgmtl.m -o bgmtl.o
-          $CC -dynamiclib -install_name $RUNDIR/libbgmtl.dylib bgmtl.o $P/libbgair.dylib $P/libdrm.2.dylib -o $P/libbgmtl.dylib \
+          $CC $OBJC -c phone/mtlnative/bg_specialize.m -o bg_specialize.o
+          $CC -dynamiclib -install_name $RUNDIR/libbgmtl.dylib bgmtl.o bg_specialize.o $P/libbgair.dylib $P/libdrm.2.dylib -o $P/libbgmtl.dylib \
             -framework Foundation -framework Metal -framework IOSurface
           for t in bgmtl_probe bgmtl_render_probe bgmtl_quad_probe bgmtl_carenderer_probe; do
             $CC $OBJC -Dmain=test_main -c chlorophyll/test/$t.m -o $t.o

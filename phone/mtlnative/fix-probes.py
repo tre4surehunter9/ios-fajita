@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""fix-probes.py CHLOROPHYLL: Chlorophyll's probes as iOS 16 and its async device need them. Each edit must match once."""
+"""fix-probes.py CHLOROPHYLL: Chlorophyll as iOS 16 needs it (probes, function constants). Each edit must match once."""
 import sys
 root = sys.argv[1]
 
@@ -30,3 +30,45 @@ edit(p, 'id<MTLDevice> d = ((id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDe
      'id<MTLDevice> sysdev = ((id (*)(void))dlsym(RTLD_DEFAULT, "MTLCreateSystemDefaultDevice"))();\n'
      '      printf("system default device: %s\\n", sysdev ? [[sysdev name] UTF8String] : "nil");\n'
      '      id<MTLDevice> d = dev;')
+
+# Real function constants (phone/mtlnative/bg_specialize.m): the translator's AIR_FC_SET list, per thread, by name or #index.
+h = f'{root}/air/nir_air.h'
+edit(h, 'unsigned air_module_function_constants(void *mem_ctx, const void *bitcode, size_t size,',
+     'extern __thread const char *air_fc_set_tls;\nunsigned air_module_function_constants(void *mem_ctx, const void *bitcode, size_t size,')
+t = f'{root}/air/air_to_nir.c'
+edit(t, 'const char *set = getenv("AIR_FC_SET");', 'const char *set = air_fc_set_tls ? air_fc_set_tls : getenv("AIR_FC_SET");')
+edit(t, """(*out)[num].bits = strtoull(q + nl + 1, NULL, 0);
+""", """(*out)[num].bits = strtoull(q + nl + 1, NULL, 0);
+                     else if (q[0] == '#' && strtoull(q + 1, NULL, 10) == idx && strchr(q, '='))
+                        (*out)[num].bits = strtoull(strchr(q, '=') + 1, NULL, 0);
+""")
+edit(t, '/* -- the interface ------------------------------------------------------ */',
+     '__thread const char *air_fc_set_tls;\n\n/* -- the interface ------------------------------------------------------ */')
+a = f'{root}/air/air_metal.c'
+edit(a, """struct rwa_compute *
+rwa_compute_create(struct rwa_device *device, const void *bitcode, size_t size,""",
+     """void rwa_set_function_constants(const char *values) { air_fc_set_tls = values; }
+
+struct rwa_compute *
+rwa_compute_create(struct rwa_device *device, const void *bitcode, size_t size,""")
+d = f'{root}/src/bgmtl.m'
+edit(d, '#include "air_metal.h"\n', '#include "air_metal.h"\nextern void bg_fc_begin(id vertex, id fragment), bg_fc_end(void);\n')
+edit(d, """   bg_lock();
+   struct rwa_render *r = rwa_render_create(""", """   bg_fc_begin(vertex, fragment);
+   bg_lock();
+   struct rwa_render *r = rwa_render_create(""")
+edit(d, """&shape, &info, why, sizeof(why));
+   bg_unlock();
+""", """&shape, &info, why, sizeof(why));
+   bg_unlock();
+   bg_fc_end();
+""")
+edit(d, """   bg_lock();
+   struct rwa_compute *c = rwa_compute_create(_rwa, air.bytes, air.length, [[function name] UTF8String], &info, why, sizeof(why));
+   bg_unlock();
+""", """   bg_fc_begin(nil, function);
+   bg_lock();
+   struct rwa_compute *c = rwa_compute_create(_rwa, air.bytes, air.length, [[function name] UTF8String], &info, why, sizeof(why));
+   bg_unlock();
+   bg_fc_end();
+""")
