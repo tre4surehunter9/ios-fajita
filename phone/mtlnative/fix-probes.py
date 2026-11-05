@@ -47,7 +47,8 @@ edit(t, '/* -- the interface ---------------------------------------------------
 a = f'{root}/air/air_metal.c'
 edit(a, """struct rwa_compute *
 rwa_compute_create(struct rwa_device *device, const void *bitcode, size_t size,""",
-     """void rwa_set_function_constants(const char *values) { air_fc_set_tls = values; }
+     """void rwa_set_function_constants(const char *values);
+void rwa_set_function_constants(const char *values) { air_fc_set_tls = values; }
 
 struct rwa_compute *
 rwa_compute_create(struct rwa_device *device, const void *bitcode, size_t size,""")
