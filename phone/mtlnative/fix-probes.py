@@ -185,3 +185,82 @@ edit(t, """   struct air_val *base = air_get(c, in->operands[0]);
       return true;
    }
    if (base->kind == AIR_VAL_FTABLE_ELEM && !base->def) {""")
+
+# The constant evaluator follows small integer vectors too. QuartzCore's ubershader keeps its colour opcodes in a uchar3, and
+# without this every arm of the switch on them is translated, some of which sample textures the constants made null.
+edit(t, """static uint32_t
+sc_key_hash(const void *k)""", """static bool
+sc_type_ok(const struct air_type *t)
+{
+   if (t && t->kind == AIR_TYPE_INT)
+      return true;
+   return t && t->kind == AIR_TYPE_VECTOR && t->elem && t->elem->kind == AIR_TYPE_INT && t->elem->bits &&
+          t->elem->bits * t->count <= 64;
+}
+
+static unsigned
+sc_type_bits(const struct air_type *t)
+{
+   return t->kind == AIR_TYPE_VECTOR ? t->elem->bits * (unsigned)t->count : t->bits;
+}
+
+static uint32_t
+sc_key_hash(const void *k)""")
+edit(t, """   if (!in || !in->base.type || in->base.type->kind != AIR_TYPE_INT)
+      return false;
+   if (!c->sc_memo)""", """   if (!in || !sc_type_ok(in->base.type))
+      return false;
+   if (!c->sc_memo)""")
+edit(t, """   unsigned bits = in->base.type->bits;
+   uint64_t a = 0, b = 0, k = 0;
+   switch (in->op) {
+   case AIR_OP_LOAD: {
+      struct sc_key key;""", """   unsigned bits = sc_type_bits(in->base.type);
+   uint64_t a = 0, b = 0, k = 0;
+   switch (in->op) {
+   case AIR_OP_EXTRACTELT: {
+      const struct air_type *vt = in->operands[0]->type;
+      if (!sc_type_ok(vt) || vt->kind != AIR_TYPE_VECTOR || !sc_eval(c, in->operands[0], &a, depth + 1) ||
+          !sc_eval(c, in->operands[1], &b, depth + 1) || b >= vt->count)
+         return false;
+      *out = sc_mask(a >> (b * vt->elem->bits), vt->elem->bits);
+      return true;
+   }
+   case AIR_OP_LOAD: {
+      struct sc_key key;""")
+edit(t, """               if (val && val->type && val->type->kind == AIR_TYPE_INT) {
+                  const struct air_inst *vi = air_value_as_inst(val);""", """               if (val && sc_type_ok(val->type)) {
+                  const struct air_inst *vi = air_value_as_inst(val);""")
+edit(t, """            } else if (in->base.type && in->base.type->kind == AIR_TYPE_INT && c->sc_memo) {""", """            } else if (sc_type_ok(in->base.type) && c->sc_memo) {""")
+
+# A resource whose air.function_constant predicate the constants make false is not part of this pipeline, as Metal's own
+# specialization would have it: nothing may demand that it be bound.
+edit(h, """struct air_resource {
+""", """struct air_resource {
+   const void *fc_predicate;   /* the global of its air.function_constant predicate, or NULL */
+""")
+edit(t, """   return &info->resources[info->num_resources++];
+""", """   {
+      const struct air_md *fc = md_key_node(node, "air.function_constant");
+      if (fc && fc->num_ops && fc->ops[0] && fc->ops[0]->kind == AIR_MD_VALUE)
+         info->resources[info->num_resources].fc_predicate = fc->ops[0]->value;
+   }
+   return &info->resources[info->num_resources++];
+""")
+edit(t, """      if (info->num_resources) {""", """      {
+         /* drop what the constants turned off */
+         unsigned kept = 0;
+         for (unsigned i = 0; i < c.info->num_resources; i++) {
+            const struct air_resource *r = &c.info->resources[i];
+            bool off = false;
+            if (r->fc_predicate && c.sc_known && c.sc_known_ok) {
+               struct sc_key key = { .g = (const struct air_global *)r->fc_predicate, .off = 0 };
+               struct sc_val *sv = sc_known_get(&c, &key);
+               off = sv && sv->known && !sv->v;
+            }
+            if (!off)
+               c.info->resources[kept++] = *r;
+         }
+         c.info->num_resources = kept;
+      }
+      if (info->num_resources) {""")
