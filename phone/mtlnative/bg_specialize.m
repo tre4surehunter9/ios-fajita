@@ -195,6 +195,10 @@ void bg_fc_begin(id vertex, id fragment)
 	append(s, vertex);
 	append(s, fragment);
 	g_values = s.length ? strdup(s.UTF8String) : NULL;
+	if (g_values != NULL) {
+		/* what reproduces this pipeline on the PC: AIR_FC_SET=<values> air2nir LIB FUNCTION */
+		printf("bg_specialize: %s: %s\n", [[fragment name] UTF8String], g_values);
+	}
 	rwa_set_function_constants(g_values);
 }
 

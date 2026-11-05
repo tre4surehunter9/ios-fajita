@@ -73,3 +73,115 @@ edit(d, """   bg_lock();
    bg_unlock();
    bg_fc_end();
 """)
+
+# QuartzCore's iOS 16 ubershader has `unused_sampler`, a struct holding a pointer, which init_bytes cannot lay out. It is only
+# reached on paths the constants make dead, so its bytes stay zero. A real read of a sampler through it still fails where it is read.
+edit(t, """         air_error(c, "interface: the initializer of a program-scope variable is not a plain constant");
+         return;
+""", """         continue;
+""")
+
+# AIR_VAL_SLOT, which the translator's comment promises and this commit lacks: a local holding a pointer keeps it at translation
+# time. QuartzCore's iOS 16 ubershader saves its two sampler arguments in such locals, then reads back either that or
+# `unused_sampler` depending on a constant. elems[0] is what the slot holds; num_elems 1 is a local, 2 is a program-scope table.
+edit(f'{root}/air/air_private.h', '   AIR_VAL_PTR_SELECT,\n', '   AIR_VAL_PTR_SELECT,\n   AIR_VAL_SLOT,\n')
+edit(t, """return v && (v->kind == AIR_VAL_PTR || v->kind == AIR_VAL_PTR_SELECT);""",
+     """return v && (v->kind == AIR_VAL_PTR || v->kind == AIR_VAL_PTR_SELECT || v->kind == AIR_VAL_SLOT);""")
+edit(t, """         return air_error(c, "instruction: an alloca of a run-time size");
+""", """         return air_error(c, "instruction: an alloca of a run-time size");
+      if (in->aux_type && in->aux_type->kind == AIR_TYPE_POINTER && count == 1) {
+         struct air_val *slot = rzalloc(c->mem_ctx, struct air_val);
+         slot->kind = AIR_VAL_SLOT;
+         slot->num_elems = 1;
+         slot->elems = rzalloc_array(c->mem_ctx, struct air_val *, 1);
+         air_set(c, &in->base, slot);
+         return true;
+      }
+""")
+edit(t, """      if (p->kind == AIR_VAL_FTABLE_ELEM) {
+         struct air_val *fv = air_get(c, in->operands[0]);""", """      if (p->kind == AIR_VAL_SLOT) {
+         struct air_val *held = air_get(c, in->operands[0]);
+         if (!held)
+            return false;
+         p->elems[0] = held;
+         return true;
+      }
+      if (p->kind == AIR_VAL_FTABLE_ELEM) {
+         struct air_val *fv = air_get(c, in->operands[0]);""")
+edit(t, """   case AIR_OP_LOAD: {
+      struct air_val *p = air_get(c, in->operands[0]);
+      if (!p)
+         return false;
+      if (p->kind == AIR_VAL_FTABLE_ELEM) {""", """   case AIR_OP_LOAD: {
+      struct air_val *p = air_get(c, in->operands[0]);
+      if (!p)
+         return false;
+      if (p->kind == AIR_VAL_SLOT) {
+         if (!p->elems[0])
+            return air_error(c, "instruction: a load of a pointer local before anything was stored in it");
+         air_set(c, &in->base, p->elems[0]);
+         return true;
+      }
+      if (p->kind == AIR_VAL_FTABLE_ELEM) {""")
+edit(t, """         nir_def *pc = air_get_ssa(c, in->operands[0]);
+         if (!pc)
+            return false;
+         if (pc->num_components != 1)
+            return air_error(c, "instruction: a vector select between pointers");""", """         /* not decided by the constants: the local, not the program-scope `unused_` fallback, which is only there for
+          * paths that never read it */
+         if (pa->kind == AIR_VAL_SLOT || pb->kind == AIR_VAL_SLOT) {
+            if (pa->kind == AIR_VAL_SLOT && pa->num_elems == 1)
+               air_set(c, &in->base, pa);
+            else if (pb->kind == AIR_VAL_SLOT && pb->num_elems == 1)
+               air_set(c, &in->base, pb);
+            else
+               return air_error(c, "instruction: a select between pointer locals at run time");
+            return true;
+         }
+         nir_def *pc = air_get_ssa(c, in->operands[0]);
+         if (!pc)
+            return false;
+         if (pc->num_components != 1)
+            return air_error(c, "instruction: a vector select between pointers");""")
+edit(t, """      air_set(c, &g->base, air_val_ptr(c, p));
+   }
+}
+""", """      air_set(c, &g->base, air_val_ptr(c, p));
+   }
+   /* a program-scope struct holding one pointer to another global: `metal::sampler unused_sampler` */
+   for (unsigned i = 0; i < c->m->num_globals; i++) {
+      const struct air_global *g = c->m->globals[i];
+      const struct air_constant *k = g->init && !c->global_plan[i].skip ? air_value_as_constant(g->init) : NULL;
+      if (!k || k->ckind != AIR_CONST_AGGREGATE || k->num_elems != 1 || !k->elems[0] || !k->elems[0]->type ||
+          k->elems[0]->type->kind != AIR_TYPE_POINTER)
+         continue;
+      struct air_val *held = air_get(c, k->elems[0]);
+      if (!held)
+         return;
+      struct air_val *slot = rzalloc(c->mem_ctx, struct air_val);
+      slot->kind = AIR_VAL_SLOT;
+      slot->num_elems = 2;
+      slot->elems = rzalloc_array(c->mem_ctx, struct air_val *, 2);
+      slot->elems[0] = held;
+      air_set(c, &g->base, slot);
+   }
+}
+""")
+edit(t, """      if (v && (v->kind == AIR_VAL_FTABLE || v->kind == AIR_VAL_FTABLE_ELEM ||""", """      if (v && (v->kind == AIR_VAL_SLOT || v->kind == AIR_VAL_FTABLE || v->kind == AIR_VAL_FTABLE_ELEM ||""")
+edit(t, """   struct air_val *base = air_get(c, in->operands[0]);
+   if (!base)
+      return false;
+   if (base->kind == AIR_VAL_FTABLE_ELEM && !base->def) {""", """   struct air_val *base = air_get(c, in->operands[0]);
+   if (!base)
+      return false;
+   if (base->kind == AIR_VAL_SLOT) {
+      /* the first member of a struct holding one pointer is the pointer's slot */
+      for (unsigned i = 1; i < in->num_operands; i++) {
+         uint64_t ix;
+         if (!air_const_uint(in->operands[i], &ix) || ix != 0)
+            return air_error(c, "instruction: an index into a pointer local that is not zero");
+      }
+      air_set(c, &in->base, base);
+      return true;
+   }
+   if (base->kind == AIR_VAL_FTABLE_ELEM && !base->def) {""")
