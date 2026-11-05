@@ -288,3 +288,9 @@ edit(pl, """- (instancetype)initWithAcceleratorPort:(uint32_t)port
    }
 """)
 edit(pl, '#include <mach-o/dyld.h>\n', '#include <fcntl.h>\n#include <mach-o/dyld.h>\n')
+
+# iOS 16's render server asks for 551, RGB10A8_2P_XR10_sRGB; the table has 550 and 552-555. Same stand-in as its neighbours.
+edit(a, """   { 550, "MTLPixelFormatRGB10A8_2P_XR10 (as BGRA8)",  PIPE_FORMAT_B8G8R8A8_UNORM },
+""", """   { 550, "MTLPixelFormatRGB10A8_2P_XR10 (as BGRA8)",  PIPE_FORMAT_B8G8R8A8_UNORM },
+   { 551, "MTLPixelFormatRGB10A8_2P_XR10_sRGB (as BGRA8 sRGB)", PIPE_FORMAT_B8G8R8A8_SRGB },
+""")
