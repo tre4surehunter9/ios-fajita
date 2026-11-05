@@ -264,3 +264,27 @@ edit(t, """      if (info->num_resources) {""", """      {
          c.info->num_resources = kept;
       }
       if (info->num_resources) {""")
+
+# Chlorophyll.bundle as backboardd's device on iOS 16. Chlorophyll sets backboardd up in an injected dylib; here Metal loads the
+# bundle (sweetmtl=3), so the plugin does it, as SweetMetal2.bundle does. Its log goes to the console, where the USB log reads it.
+pl = f'{root}/plugin/chlorophyll_plugin.m'
+edit(pl, """   if (!strcmp(name, "backboardd")) return "backboardd: Metal only through the inject, else the CPU renderer";
+""", "")
+edit(pl, """- (instancetype)initWithAcceleratorPort:(uint32_t)port
+{
+   const char *name = getprogname() ? getprogname() : "?";
+""", """- (instancetype)initWithAcceleratorPort:(uint32_t)port
+{
+   const char *name = getprogname() ? getprogname() : "?";
+   if (!strcmp(name, "backboardd")) {
+      int console = open("/dev/console", O_WRONLY | O_NOCTTY);
+      if (console >= 0) { dup2(console, 1); dup2(console, 2); setvbuf(stdout, NULL, _IOLBF, 0); setvbuf(stderr, NULL, _IOLBF, 0); }
+      fprintf(stderr, "CHL: backboardd uses Chlorophyll\\n");
+      setenv("BGMTL_BB", "1", 1);
+      setenv("CA_DISABLE_FRAMEBUFFER_COMPRESSION", "1", 1);
+      CFPreferencesSetAppValue(CFSTR("CAEnableFramebufferCompression"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
+      CFPreferencesSetAppValue(CFSTR("CAEnableIOSurfaceCompression"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
+      CFPreferencesSetAppValue(CFSTR("CAEnableDeepFramebuffer"), kCFBooleanFalse, kCFPreferencesCurrentApplication);
+   }
+""")
+edit(pl, '#include <mach-o/dyld.h>\n', '#include <fcntl.h>\n#include <mach-o/dyld.h>\n')

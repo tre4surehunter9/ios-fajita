@@ -13,6 +13,7 @@
 #import <Metal/Metal.h>
 #import <objc/message.h>
 #import <objc/runtime.h>
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -234,6 +235,11 @@ static void hook_class(Class c, SEL s, IMP with)
 
 __attribute__((constructor)) static void bg_specialize_install(void)
 {
+	/* Metal validation failures abort by default; as SweetMetal2: report them instead (5 = NSLog) */
+	void (*set_mode)(unsigned, unsigned) = (void (*)(unsigned, unsigned))dlsym(RTLD_DEFAULT, "MTLFailureTypeSetErrorMode");
+	for (unsigned t = 0; set_mode != NULL && t < 5; t++) {
+		set_mode(t, 5);
+	}
 	Class l = NSClassFromString(@"_MTLLibrary"), desc = NSClassFromString(@"MTLFunctionDescriptor");
 	const char *const names[] = { "MTLFunctionConstantValuesInternal", "_MTLFunctionConstantValues", "MTLFunctionConstantValues" };
 	if (l == Nil || desc == Nil) {

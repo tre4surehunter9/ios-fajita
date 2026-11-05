@@ -159,6 +159,50 @@ jobs:
           ls -la out
           shasum -a 256 out/* | tee out/SHA256SUMS
 
+      - name: Build Chlorophyll.bundle and chlinstall
+        run: |
+          set -e
+          SDK=$(xcrun --sdk iphoneos --show-sdk-path)
+          CC="$(xcrun --sdk iphoneos --find clang) -target arm64-apple-ios16.0 -isysroot $SDK"
+          B=bundle; rm -rf $B; mkdir -p $B
+          # the libraries, named by where they sit next to the bundle's executable
+          cp stage/libbgair.dylib stage/libdrm.2.dylib $B/
+          install_name_tool -id @loader_path/libdrm.2.dylib $B/libdrm.2.dylib
+          install_name_tool -id @loader_path/libbgair.dylib $B/libbgair.dylib
+          install_name_tool -change $RUNDIR/libdrm.2.dylib @loader_path/libdrm.2.dylib $B/libbgair.dylib
+          OBJC="-O1 -g -fno-objc-arc -Wall -Wno-deprecated-declarations -I chlorophyll/air"
+          # the bundle's copy of the Chlorophyll classes gets its own names, as Chlorophyll's plugin/build.sh does
+          RENAME=""
+          for c in $(grep -oE '^@interface (BG[A-Za-z0-9_]+)' chlorophyll/src/bgmtl.m | sed 's/@interface //' | sort -u); do RENAME="$RENAME -D$c=CHL_$c"; done
+          $CC $OBJC $RENAME -c chlorophyll/plugin/chlorophyll_plugin.m -o chlorophyll_plugin.o
+          $CC $OBJC -c phone/mtlnative/bg_specialize.m -o bg_specialize_b.o
+          $CC -bundle -o $B/Chlorophyll chlorophyll_plugin.o bg_specialize_b.o $B/libbgair.dylib $B/libdrm.2.dylib \
+            -framework Foundation -framework Metal -framework IOSurface -framework IOKit -framework CoreFoundation
+          otool -L $B/Chlorophyll | head -8
+          cat > $B/Info.plist <<'EOP'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+          	<key>CFBundleDevelopmentRegion</key><string>en</string>
+          	<key>CFBundleExecutable</key><string>Chlorophyll</string>
+          	<key>CFBundleIdentifier</key><string>org.iosonpixel.Chlorophyll</string>
+          	<key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+          	<key>CFBundleName</key><string>Chlorophyll</string>
+          	<key>CFBundlePackageType</key><string>BNDL</string>
+          	<key>CFBundleShortVersionString</key><string>1.0</string>
+          	<key>CFBundleVersion</key><string>1</string>
+          	<key>NSPrincipalClass</key><string>CHLDevice</string>
+          </dict>
+          </plist>
+          EOP
+          sed -i '' 's/^          //' $B/Info.plist
+          codesign -f -s - $B/libdrm.2.dylib $B/libbgair.dylib $B/Chlorophyll
+          python3 phone/mtlnative/pack.py mtl.blob $B/libdrm.2.dylib $B/libbgair.dylib $B/Info.plist $B/Chlorophyll
+          $CC -O2 -Wall -o out/chlinstall phone/mtlnative/chlinstall.c phone/mtlnative/blob.S -lcompression
+          codesign -f -s - out/chlinstall
+          ls -la out/chlinstall $B
+
       - uses: actions/upload-artifact@v4
         if: always()
         with:

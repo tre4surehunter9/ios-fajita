@@ -1,0 +1,48 @@
+diff --git a/iokit/Kernel/arm/SweetFramebuffer.cpp b/iokit/Kernel/arm/SweetFramebuffer.cpp
+index bf9020c..c48efd5 100644
+--- a/iokit/Kernel/arm/SweetFramebuffer.cpp
++++ b/iokit/Kernel/arm/SweetFramebuffer.cpp
+@@ -300,7 +300,7 @@ sweet_fb_gpu_surfaces(void)
+ 	if (v < 0) {
+ 		uint32_t mtl = 0;
+ 		PE_parse_boot_argn("sweetmtl", &mtl, sizeof(mtl));
+-		v = mtl == 2;
++		v = mtl == 2 || mtl == 3;
+ 	}
+ 	return v;
+ }
+diff --git a/iokit/Kernel/arm/SweetGPU.cpp b/iokit/Kernel/arm/SweetGPU.cpp
+index 50da6c3..4ef5026 100644
+--- a/iokit/Kernel/arm/SweetGPU.cpp
++++ b/iokit/Kernel/arm/SweetGPU.cpp
+@@ -125,7 +125,7 @@ SweetMetal::probe(IOService *provider, SInt32 *score)
+ 	uint32_t gpu = 0, mtl = 0;
+ 	PE_parse_boot_argn("sweetgpu", &gpu, sizeof(gpu));
+ 	PE_parse_boot_argn("sweetmtl", &mtl, sizeof(mtl));
+-	return gpu >= 3 && mtl == 2 && sweet_board_is("oneplus,fajita") ? IOService::probe(provider, score) : NULL;
++	return gpu >= 3 && (mtl == 2 || mtl == 3) && sweet_board_is("oneplus,fajita") ? IOService::probe(provider, score) : NULL;
+ }
+ 
+ bool
+@@ -134,13 +134,17 @@ SweetMetal::start(IOService *provider)
+ 	if (!IOService::start(provider)) {
+ 		return false;
+ 	}
+-	setProperty("MetalPluginName", "SweetMetal2");
+-	setProperty("MetalPluginClassName", "SweetMTL2Device");
+-	setProperty("IOGLBundleName", "SweetMetal2");
++	/* sweetmtl=3: the native route, Chlorophyll.bundle (phone/mtlnative): Mesa freedreno and no Vulkan layer */
++	uint32_t mtl = 2;
++	PE_parse_boot_argn("sweetmtl", &mtl, sizeof(mtl));
++	const char *plugin = mtl == 3 ? "Chlorophyll" : "SweetMetal2";
++	setProperty("MetalPluginName", plugin);
++	setProperty("MetalPluginClassName", mtl == 3 ? "CHLDevice" : "SweetMTL2Device");
++	setProperty("IOGLBundleName", plugin);
+ 	setProperty("model", "Adreno 630");
+ 	setProperty(kIOUserClientClassKey, "SweetGPUUserClient");
+ 	registerService();
+-	IOLog("SWEET GPU: IOAcceleratorES published for Metal (MetalPluginName SweetMetal2)\n");
++	IOLog("SWEET GPU: IOAcceleratorES published for Metal (MetalPluginName %s)\n", plugin);
+ 	return true;
+ }
+ 

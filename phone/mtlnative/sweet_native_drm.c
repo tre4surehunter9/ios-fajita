@@ -300,6 +300,21 @@ static int gem_submit(struct drm_msm_gem_submit *rq)
 	struct NativeAdrenoAbiSubmit s;
 	uint32_t fence = g_last_fence;
 	memset(&s, 0, sizeof(s));
+	/*
+	 * The GPU maps imported surfaces non-cacheable. One it only reads was written by some process's CPU (a layer's backing
+	 * store), so its lines are cleaned first. One it writes is a render target the CPU does not touch: flushing screen-sized
+	 * framebuffers every frame would only cost time.
+	 */
+	for (uint32_t i = 0; i < rq->nr_bos; i++) {
+		uint32_t h = bos[i].handle;
+		if (h != 0 && h <= MAX_BOS && g_bo[h].surface != NULL && !(bos[i].flags & MSM_SUBMIT_BO_WRITE)) {
+			uintptr_t base = (uintptr_t)g_bo[h].map;
+			for (uintptr_t a = base; a < base + g_bo[h].size; a += 64) {
+				__asm__ volatile("dc civac, %0" :: "r"(a) : "memory");
+			}
+			__asm__ volatile("dsb sy" ::: "memory");
+		}
+	}
 	for (uint32_t i = 0; i < rq->nr_cmds; i++) {
 		const struct drm_msm_gem_submit_cmd *c = &cmds[i];
 		if (c->type == MSM_SUBMIT_CMD_IB_TARGET_BUF) {
