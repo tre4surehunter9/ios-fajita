@@ -2,10 +2,39 @@
 
 ## Agent handoff / active work (2026-10-15, latest)
 
-### fajita (OnePlus 6T) port, branch `fajita` (handoff 2026-11-01, latest)
+### fajita (OnePlus 6T) port, branch `fajita` (handoff 2026-11-21, latest)
 
 Details, boot log and hardware facts: `PORTING.md`; GPU, display and performance: `GPU-PLAN.md` (status
 table at the top). State:
+- **Handoff 2026-11-21 (resumed after a ~2-week pause; written from git history only).** The 2026-11-02..04
+  work below was never written into a handoff; this entry reconstructs it from commit messages. This machine
+  is a fresh clone: `shim/out-fajita/` and `work/tmp/` (boot images, USB logs) are not here, so it is not
+  known which image is on boot_a now or what root changes the phone has beyond those listed below.
+  - **Since 2026-11-01 (from commits):** wallpaper + widgets work (0124 AMFI-named MAC policy, `phone/extfix`,
+    0125/0126 container path for the three Siri voice extensions; AegirPoster still crashes, cause not looked
+    into). 0127 sampler names non-cache images, 0128 TOPX (kernel share, faults, syscalls): the fault
+    hypothesis for backboardd's CPU was mostly wrong (GPU-PLAN.md). `phone/sweetsetup` = quiet + unquiet +
+    extfix in one run-once program (23670ce). Plan additions (user): battery gauge, then SSH over USB, before
+    Wi-Fi; IPA installing after Wi-Fi (GPU-PLAN.md).
+  - **Last active work, 2026-11-04: native Metal route (`phone/mtlnative`, workflow `mtlnative`, kernel 0129,
+    boot-arg `sweetmtl=3`).** Instead of SweetMetal2 (metal2vulkan + Turnip), Chlorophyll.bundle is
+    backboardd's Metal device: Mesa 25.0.7 freedreno (msm backend, Bergamota's patch) over a libdrm stand-in
+    (`sweet_native_drm.c`) on SweetGPU's NativeAdreno interface, Chlorophyll's AIR translator. `chlinstall`
+    puts the bundle on the root, allowed for backboardd only. `sweetmtl=2` behaves as before.
+    `bg_specialize.m` supplies real function constants (CoreAnimation aborts when
+    newFunctionWithDescriptor returns nil); QuartzCore's iOS 16 ubershader compiles on the PC (95/95
+    fragment, 139/141 overall; the tile downsamples remain); pixel format 551 (RGB10A8_2P_XR10_sRGB) added.
+  - **Last phone observation (from e889fe6's message, no log in the repo):** with `sweetmtl=3` backboardd's
+    GPU was slow from the first frame and then faulted at an address in its window. e889fe6 logs every BO,
+    submit and slow fence wait so the fault address can be matched to a buffer. CI: mtlnative run
+    41964641563 and phone run 41964641635 succeeded; kernel with 0129 = xnu run 41961528772 (98f4d04)
+    succeeded (41960285782 failed packaging while bearssl.org was down; fixed by 98f4d04/9a8492f).
+    **Not known whether the e889fe6 build was ever run on the phone.**
+  - **Next:** ask the user which image is on boot_a and whether the phone still has the mtlnative bundle.
+    Then boot `sweetmtl=3` with the e889fe6 artifacts, capture the USB log, and match the fault address to a
+    BO. The fallback is `sweetmtl=2` (the 21-24 fps SweetMetal2 path). After that, in the user's order:
+    battery gauge, SSH over USB, Wi-Fi, IPAs; 8 GiB RAM still open.
+  - Branch note: `main` stops at 955cde8 (2026-10-31); all later work is only on `fajita`.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
