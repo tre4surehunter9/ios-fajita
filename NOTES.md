@@ -36,7 +36,9 @@ table at the top). State:
     battery gauge, SSH over USB, Wi-Fi, IPAs; 8 GiB RAM still open.
   - Branch note: `main` stops at 955cde8 (2026-10-31); all later work is only on `fajita`.
   - **Rebuilt on this machine (2026-11-21, user: "the last image before mtlnative"):**
-    `shim/out-fajita/shim-boot-0128g.img` (sha256 `f5780bde…7be6e`), not booted yet. Kernel 0128 = xnu run
+    `shim/out-fajita/shim-boot-0128g.img` (sha256 `f5780bde…7be6e`). **Booted 2026-11-21 via `fastboot boot`
+    (ABL accepted it, no Load Error): home screen, scrolling "smooth as it was" (user), so the GPU path and the
+    LineageOS DTBs work.** Not flashed; boot_a still holds the unknown image. Kernel 0128 = xnu run
     41325741715 (16ea384, SHA256SUMS ok) in `xnu/out-0128/`; ADT `--board fajita` from
     `research/ipsw-x/d22ap.adt` (IPSW 20H392 via ipsw.me + tools/remotezip.py); `--gpufw research/gpu/fw`
     (all three sha256 match the table in GPU-PLAN.md; zap now at gitlab.com/sdm845-mainline/
@@ -44,7 +46,7 @@ table at the top). State:
     Sailfish dump was lost with the old machine (the ~/Documents/backups* boot_a images are the Essential
     phone's), so the user chose the DTBs appended to LineageOS 22.2 fajita 20261117 boot.img
     (`dtb/fajita/lineage-20261117/`): the same three generic SDM845 v1/v2/v2.1 DTBs, board-id 0. Untested
-    with ABL. The user said the phone currently boots "without GPU" (image on boot_a unknown, no copy here).
+    so far. The user said the phone currently boots "without GPU" (image on boot_a unknown, no copy here).
     Root is assumed to still hold SweetMetal2.bundle (chlinstall only adds Chlorophyll.bundle).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
