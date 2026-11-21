@@ -35,6 +35,17 @@ table at the top). State:
     BO. The fallback is `sweetmtl=2` (the 21-24 fps SweetMetal2 path). After that, in the user's order:
     battery gauge, SSH over USB, Wi-Fi, IPAs; 8 GiB RAM still open.
   - Branch note: `main` stops at 955cde8 (2026-10-31); all later work is only on `fajita`.
+  - **Rebuilt on this machine (2026-11-21, user: "the last image before mtlnative"):**
+    `shim/out-fajita/shim-boot-0128g.img` (sha256 `f5780bde…7be6e`), not booted yet. Kernel 0128 = xnu run
+    41325741715 (16ea384, SHA256SUMS ok) in `xnu/out-0128/`; ADT `--board fajita` from
+    `research/ipsw-x/d22ap.adt` (IPSW 20H392 via ipsw.me + tools/remotezip.py); `--gpufw research/gpu/fw`
+    (all three sha256 match the table in GPU-PLAN.md; zap now at gitlab.com/sdm845-mainline/
+    firmware-oneplus-sdm845 @176ca71); boot-args = README §4 + `sweetgpu=3 sweetmtl=2`. **DTBs:** the
+    Sailfish dump was lost with the old machine (the ~/Documents/backups* boot_a images are the Essential
+    phone's), so the user chose the DTBs appended to LineageOS 22.2 fajita 20261117 boot.img
+    (`dtb/fajita/lineage-20261117/`): the same three generic SDM845 v1/v2/v2.1 DTBs, board-id 0. Untested
+    with ABL. The user said the phone currently boots "without GPU" (image on boot_a unknown, no copy here).
+    Root is assumed to still hold SweetMetal2.bundle (chlinstall only adds Chlorophyll.bundle).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
