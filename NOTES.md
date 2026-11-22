@@ -217,6 +217,14 @@ table at the top). State:
     DNS. Then **ping 4/4 ~7 ms**, and `nettest`: DNS apple.com (first lookup 10 s), TCP :80 19 ms, **HTTPS 200** via
     NSURLSession (478 ms). The live wland -> PC output stalled mid-line after ~30 s although wland kept running (relay
     issue, not investigated). Next: wland as a boot job (`wland auto`, launchd), then Settings -> Wi-Fi (flame 0123 en0).
+  - **Battery during Wi-Fi (2026-11-22):** gauge 5 % -> 0 % in a minute, flags 0x10d/0x10f (SOC1 + SOCF: the gauge's
+    own low/empty thresholds), -1.1..-1.5 A with modem + radio + GPU on the PC port; then the phone dropped to
+    fastboot: 3496 mV, battery-soc-ok no (fastboot has no percentage, only voltage and soc-ok).
+  - **Wi-Fi boot job (written 2026-11-22, not run): phone/wlandjob** (`install | remove | show`, run once over sweetcmd)
+    adds launchd job com.sweet.wland = `/var/local/bin/wland auto` (RunAtLoad, LaunchOnlyOnce, root, Interactive) to
+    /System/Library/xpc/launchd.plist the way phone/quiet edits it (backup launchd.plist.pre-wland once). radio.c: with
+    no USB route (daily image, sweetusb=1) wland now sets up the last bank CB44 itself exactly as usb_smmu_route does.
+    **Needs a daily image with kernel 0135** (boot_a still has 0131d): 0135d = 0131d's boot-args (sweetusb=1) on 0135.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16

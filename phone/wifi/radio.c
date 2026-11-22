@@ -91,7 +91,8 @@ static int sid_match(uint32_t smr, uint32_t sid, uint32_t mask)
  * routine (lowest free bank, stage-2 CBAR, CBA2R, TCR, TLB sync) and a scan reading other banks' SCTLR from the
  * top down both reset the SoC; the hypervisor owns stage 2 and guards banks here. So the WLAN stream shares USB's
  * bank (S1 translate / S2 bypass, SCTLR.M = 0: untranslated; banks may be shared by several S2CRs): one S2CR and
- * one SMR are written, nothing else. smmu_dry = 1: only print what would be written.
+ * one SMR are written, nothing else. Without a USB route (sweetusb < 2) the last bank is first set up the way
+ * usb_smmu_route does it (SCTLR 0, CBAR TYPE 1). smmu_dry = 1: only print what would be written.
  */
 int smmu_dry;
 
@@ -127,15 +128,39 @@ int smmu_wlan_identity(void)
 			cb = (int)(s2cr & 0xff);
 		}
 	}
-	if (usb < 0 || slot < 0) {
-		printf("smmu: no USB route to share (USB SMR %d) or no free SMR (%d): boot with sweetusb=2\n", usb, slot);
+	if (slot < 0) {
+		printf("smmu: no free SMR\n");
 		return -1;
 	}
-	uint64_t gr1 = s + psize, cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
+	uint64_t gr1 = s + psize;
+	if (usb < 0) {
+		/* No USB route (sweetusb < 2, e.g. the daily image): set up the last bank exactly as
+		 * usb_smmu_route would, if no S2CR uses it and its translation is off. */
+		cb = (int)ncb - 1;
+		for (uint32_t i = 0; i < nsmr; i++) {
+			uint32_t smr = rd32(s + 0x800 + 4 * i), s2cr = rd32(s + 0xc00 + 4 * i);
+			if ((smr >> 31) && ((s2cr >> 16) & 3) == 0 && (s2cr & 0xff) == (uint32_t)cb) {
+				printf("smmu: no USB route and CB%d is used by SMR%u; not routing\n", cb, i);
+				return -1;
+			}
+		}
+		uint64_t cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
+		if (rd32(cbp) & 1) {
+			printf("smmu: no USB route and CB%d translates (SCTLR %08x); not routing\n", cb, rd32(cbp));
+			return -1;
+		}
+		printf("smmu: no USB route: %s CB%d as usb_smmu_route does (SCTLR 0, CBAR S1/S2-bypass)\n",
+		       smmu_dry ? "would set up" : "setting up", cb);
+		if (!smmu_dry) {
+			wr32(cbp, 0);
+			wr32(gr1 + 4 * cb, 1u << 16);
+		}
+	}
+	uint64_t cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
 	uint32_t cbar = rd32(gr1 + 4 * cb), sctlr = rd32(cbp);
-	printf("smmu: USB's SMR%d -> CB%d: CBAR %08x SCTLR %08x\n", usb, cb, cbar, sctlr);
-	if (((cbar >> 16) & 3) != 1 || (sctlr & 1)) {
-		printf("smmu: CB%d is not S1/S2-bypass with translation off; not sharing it\n", cb);
+	printf("smmu: %s CB%d: CBAR %08x SCTLR %08x\n", usb >= 0 ? "USB's" : "our", cb, cbar, sctlr);
+	if (!smmu_dry && (((cbar >> 16) & 3) != 1 || (sctlr & 1))) {
+		printf("smmu: CB%d is not S1/S2-bypass with translation off; not using it\n", cb);
 		return -1;
 	}
 	uint32_t want_smr = (1u << 31) | (WLAN_SID_MASK << 16) | WLAN_SID;
