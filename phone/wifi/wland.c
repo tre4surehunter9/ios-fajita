@@ -15,7 +15,7 @@
  *   wland smp2p-init        our outbound SMP2P item + doorbell; shows the modem's entries
  *   wland qmp MSG           message to the AOP over QMP (opens the link if needed)
  *   wland shutdown          PAS shutdown of the modem
- *   wland boot              power votes + PAS boot of the modem + wait for ready
+ *   wland boot [META_PA]    power votes + PAS boot of the modem + wait for ready (META_PA: metadata there, fajita)
  *   wland smmu              the WLAN DMA stream through a translation-off SMMU bank (radio.c)
  *   wland up [SECS]         all of it from a fresh boot, then the radio: copy engines, WMI, passive scans
  *   wland auto              the boot job (launchd org.iosonpixel.wland): `up 0` once per phone boot, log in
@@ -398,6 +398,8 @@ static uint8_t *slurp(const char *path, size_t *len)
 
 struct phdr { uint32_t type, offset, vaddr, paddr, filesz, memsz, flags, align; };
 
+static uint64_t boot_meta_pa;	/* fajita: `wland boot PA` puts the PAS metadata there (e.g. below 4 GiB) */
+
 static int boot_modem(void)
 {
 	/* 1. proxy votes as downstream (vdd_cx/vdd_mss >= 385): the top levels */
@@ -436,7 +438,7 @@ static int boot_modem(void)
 		return -1;
 	}
 	size_t ehsz = phoff + 32ull * phnum, meta_len = ehsz + ph[hash].filesz;
-	uint8_t *meta = malloc(meta_len);
+	uint8_t *meta = calloc(1, meta_len + 4);
 	memcpy(meta, mdt, ehsz);
 	if (ph[hash].offset + ph[hash].filesz <= mlen) {
 		memcpy(meta + ehsz, mdt + ph[hash].offset, ph[hash].filesz);
@@ -452,10 +454,12 @@ static int boot_modem(void)
 		memcpy(meta + ehsz, h, ph[hash].filesz);
 		free(h);
 	}
-	uint64_t meta_pa = pm_alloc(meta_len, 0x1000);
+	/* fajita: XNU's memory is all above 4 GiB here, so pm_alloc's buffer is too; `wland boot PA` puts the
+	 * metadata at PA instead (free low DRAM; /dev/pmem writes it as device memory, so TZ sees it). */
+	uint64_t meta_pa = boot_meta_pa ? boot_meta_pa : pm_alloc(meta_len, 0x1000);
 	if (!meta_pa)
 		return -1;
-	pm_wr(meta_pa, meta, meta_len);
+	pm_wr(meta_pa, meta, (meta_len + 3) & ~(size_t)3);
 	uint64_t r1 = 0;
 	int64_t rc = scm(1, 2 | (2u << 6), PAS_MODEM, meta_pa, 0, &r1);
 	printf("boot: init image (%zu bytes metadata at %llx) -> %lld/%llx\n", meta_len, (unsigned long long)meta_pa,
@@ -818,6 +822,8 @@ int main(int argc, char **argv)
 	} else if (!strcmp(c, "wlan-power")) {
 		return wlan_power() ? 1 : 0;
 	} else if (!strcmp(c, "boot")) {
+		if (argc > 2)
+			boot_meta_pa = strtoull(argv[2], NULL, 0);
 		return boot_modem() ? 1 : 0;
 	} else if (!strcmp(c, "bcm") && argc > 3) {
 		/* a BCM (bus) vote: x = average, y = peak, in the BCM's own units (0x3fff = its top level); commit + valid */
