@@ -146,6 +146,15 @@ table at the top). State:
     segments relocated from min paddr, PMI start/length, then modem-only -> status 4; SMP2P ready; MBA region back.
     Failure: halt AXI q6/modem/nc, regions back to HLOS, reset assert (then reboot before retrying: repeated
     hyp_assigns hung TZ for ios-flame). scm.c hyp_assign now uses a fixed low page 0xE1010000 (pm_alloc is >4 GiB here).
+  - **2026-11-21 23:35: THE MODEM BOOTS through MBA** (`wland smp2p-init` + `wland boot-mba`, 0133c, phone-bin run
+    44988783122; logs/wland-boot-mba-1.txt). QMP load_state acked; cx[7] mx[4] mss[7]; all clocks on (iface/snoc_axi
+    cbcr 0x1, boot rom 0x4220); after the alt reset RMB MSS status 0xc; boot FSM done, **PBL 1, MBA 2** (unlocked +
+    scribbled), **metadata 3**, 125206729 bytes of segments (relocatable, start 0x8e000000), **MPSS auth 4**, **SMP2P
+    ready after 100 ms**; all 9 hyp_assigns -> 0 (parameters at 0xE1010000). ~1-2 min later still `slave-kernel` = 2
+    (ready, no fatal); outbound 428 `master-kernel` 0. Nobody serves GLINK/QRTR yet. Battery 17 % (356/2092 mAh).
+    **Next:** rmtfs needs this phone's modemst1, modemst2, fsg, fsc: a read-only way to read them (kernel UFS driver
+    only exposes userdata today); then `wland up`'s later layers (GLINK, QRTR, rmtfs, pd-mapper, TFTP wlanmdsp, WLFW).
+    Charge the phone first (it drains ~1 A even on the PC port).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
