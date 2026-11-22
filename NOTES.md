@@ -243,6 +243,16 @@ table at the top). State:
     the boot; log (logs/usb-0136p.txt): `flame wlan: /dev/wlan ready (major 20)`, normal start-up, then the stream
     stops mid-way, no panic, phone gone from USB (power loss). Nothing of ours was writing; HFS's journal should
     cover iOS's own writes. Before the next test: charge off, on a wall charger, >= ~3.8 V in fastboot.
+  - **Charging (2026-11-22, user):** an overnight charge in fastboot on a USB-C PD charger only reached ~3.75 V. The 6T
+    has no USB PD (Android Authority; XDA: PD chargers charge it slowly), only Dash/Warp; plus nothing in iOS sets
+    the charger up and the battery is worn (FCC ~2.1 of 3.7 Ah). Mainline qcom_pmi8998_charger.c: init sequence
+    (AICL, watchdog off, fast charge capped at 1 A on OnePlus 6 "fire hazard"), APSD type (0x1307/0x1308) ->
+    USBIN_CURRENT_LIMIT_CFG 0x1370 (25 mA steps: SDP 500 mA, DCP/CDP 1.5 A), APSD rerun CMD_APSD 0x1341.
+    **Kernel patch 0137 (written, not built): read-only `SWEET CHG:` report** on every plug change: APSD type, USB-C
+    Rp (TYPE_C_STATUS_1 0x130b: default/1.5 A/3 A), ICL_STATUS 0x1607 in effect, the ICL/fast/pre/float configs ABL
+    left, charging enable, charger watchdog. **0138 (next): SPMI writes** through the v5 "chnls" channel
+    (0x0c600000 + 0x10000 * APID; EXT_WRITEL opcode 0, WDATA0 +0x10, CMD +0, STATUS +8), only for APIDs owned by EE 0
+    and an allowlist of charger registers, to set the ICL from the APSD type as mainline does.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16

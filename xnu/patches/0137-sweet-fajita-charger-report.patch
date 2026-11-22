@@ -1,0 +1,62 @@
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 23eb938..d8782c3 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -48,6 +48,7 @@ private:
+ 	    bool capable, bool charging, bool full, bool measured, bool currentValid);
+ 	void poll(void);
+ 	void pollGauge(void);
++	void chargerReport(bool external);
+ 	static void timerFired(OSObject *owner, IOTimerEventSource *sender);
+ 	static IOReturn stopPolling(OSObject *owner, void *, void *, void *, void *);
+ 	static bool readWord(unsigned address, uint16_t *value);
+@@ -272,6 +273,39 @@ SweetBattery::poll(void)
+ 	    charging, full, true, currentValid);
+ }
+ 
++/*
++ * fajita: what limits charging, read only (mainline qcom_pmi8998_charger.c registers, PMI8998 USID 2):
++ * the detected charger type (APSD), what the USB-C source advertises (TYPE_C_STATUS_1 Rp), the input current
++ * limit in effect (ICL_STATUS) and the settings ABL left (USBIN_CURRENT_LIMIT_CFG, ICL options, fast-charge
++ * current, float voltage, charging enable, charger watchdog). Logged when the plug state changes.
++ */
++void
++SweetBattery::chargerReport(bool external)
++{
++	static const struct { const char *name; uint16_t reg; } regs[] = {
++		{ "apsd", 0x1307 }, { "apsd_result", 0x1308 }, { "typec1", 0x130b },
++		{ "icl_status", 0x1607 }, { "usbin_icl_cfg", 0x1370 }, { "icl_options", 0x1366 },
++		{ "usbin_load", 0x1365 }, { "usbin_opt1", 0x1362 }, { "aicl_opt", 0x1380 },
++		{ "fast_chg_cfg", 0x1061 }, { "pre_chg_cfg", 0x1060 }, { "float_v_cfg", 0x1070 },
++		{ "chg_enable", 0x1042 }, { "chgr_cfg2", 0x1051 }, { "wd_cfg", 0x1651 }, { "bark_bite", 0x1653 },
++	};
++	uint8_t v[sizeof(regs) / sizeof(regs[0])];
++	for (unsigned i = 0; i < sizeof(regs) / sizeof(regs[0]); i++) {
++		if (sweet_spmi_read(2, regs[i].reg, &v[i])) {
++			v[i] = 0xff;
++		}
++	}
++	/* Current fields are in 25 mA steps; FLOAT_VOLTAGE_CFG is 3487.5 mV + 7.5 mV * (n - 1). */
++	const char *type = !(v[0] & 1) ? "not done" : (v[1] & 4) ? "CDP" : (v[1] & 0x1a) ? "DCP/OCP/float" :
++	    (v[1] & 1) ? "SDP" : "unknown";
++	const char *rp = (v[2] & 0x20) ? "3.0 A" : (v[2] & 0x40) ? "1.5 A" : (v[2] & 0x80) ? "default" : "none";
++	IOLog("SWEET CHG: external=%d type %s (apsd %#x result %#x), USB-C source Rp %s (typec1 %#x); ICL in effect "
++	    "%u mA (cfg %u mA, options %#x, load %#x, opt1 %#x, aicl %#x); fast charge %u mA, pre %u mA, float %u mV; "
++	    "chg_enable %#x cfg2 %#x wd %#x/%#x\n",
++	    external, type, v[0], v[1], rp, v[2], v[3] * 25u, v[4] * 25u, v[5], v[6], v[7], v[8], v[9] * 25u,
++	    v[10] * 25u, v[11] ? (34875u + 75u * (v[11] - 1u)) / 10u : 0u, v[12], v[13], v[14], v[15]);
++}
++
+ /* fajita: bq27411 standard commands (mainline bq27421_regs). */
+ void
+ SweetBattery::pollGauge(void)
+@@ -335,6 +369,9 @@ SweetBattery::pollGauge(void)
+ 	fCentiC = (unsigned)((int)temp * 10 - 27315 > 0 ? (int)temp * 10 - 27315 : 0);
+ 	fTempMeasured = true;
+ 	unsigned percent = soc;
++	if (chgValid && (int)external != fLastExternal) {
++		chargerReport(external);
++	}
+ 	if ((fPolls++ % 10) == 0 || (int)external != fLastExternal ||
+ 	    (int)charging != fLastCharging) {
+ 		IOLog("SWEET FG: soc=%u%% %u mV %d mA flags=%#x rem=%u full=%u mAh %u.%u C "
