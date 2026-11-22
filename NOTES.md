@@ -78,6 +78,9 @@ table at the top). State:
     limit. So the gauge does measure current; 0130b's 0 mA was most likely its first average. boot_a still 0128g.
     Open: faster plug/unplug updates, input current limit / charger setup (writes, ask the user first), warn and
     critical levels, then SSH over USB.
+  - **2026-11-21: daily image 0131d flashed to boot_a** (user's request): kernel 0131 (xnu run 44983368052), 0128g's
+    boot-args + `sweetbattery=1` (`sweetusb=1`, no live log), sha256 `56ae7963…`. Phone left in fastboot after the
+    flash (not booted). Rebuild: same recipe as 0128g with xnu/out-0131.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
