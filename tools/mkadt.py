@@ -239,7 +239,16 @@ def build(seed=None, qemu=False, highmem=False, board='sweet'):
             ('compatible', cstr('sweet,display')),
             ('canvas-width', u32(1125)),
             ('canvas-height', u32(2436)),
-        ])])
+        ])] + ([
+        # fajita: launchd starts wifid only when the device tree has a "wlan"
+        # node (com.apple.wifid _LimitLoadToDeviceTree); the kernel's en0 +
+        # Apple80211 (xnu patch 0136, from ios-flame/ios-topaz) answer it.
+        # Not on sweet, whose ADT stays byte-identical to upstream's.
+        node('wlan', [
+            ph(),
+            ('device_type', cstr('wlan')),
+            ('compatible', cstr('fajita,wcn3990')),
+        ])] if board == 'fajita' else []))
 
     fbcon = node('sweet-fbcon', [
         ph(),

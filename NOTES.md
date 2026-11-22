@@ -258,6 +258,19 @@ table at the top). State:
     (default off): APSD done -> 0x1370 = 1.5 A for CDP/DCP/OCP/float, 500 mA for SDP; APSD not done -> rerun (max 3).
     Mainline's fast-charge cap and init sequence are not touched. Test: 0137 report first (plug type + ICL), then
     sweetcharge=1 and watch ICL_STATUS and the gauge's current.
+  - **0138p (2026-11-22): charger report.** On the PC's USB-C port: `type SDP, USB-C source Rp 3.0 A; ICL in effect
+    500 mA (cfg 500), fast charge 500 mA, pre 250 mA, float 4342 mV, chg_enable 0 cfg2 0xc3 wd 0/0xf`; gauge 4 %,
+    3642 mV, -56 mA, charger state 3. So ABL leaves the battery's fast-charge current at 500 mA (mainline: 1 A) and
+    the ICL at 500 mA although the source advertises 3 A. Idea for 0139 (not written): FCC 0x1061 -> 1 A (mainline's
+    cap) and ICL from Type-C Rp (1.5 A cap) when above the APSD value.
+  - **Settings -> Wi-Fi on 0138p (`wland up 300`, logs/wland-up-5.txt):** bridge opens /dev/wlan, `the kernel makes
+    en0`, kernel: `en0 attached on wcn3990`, `apple80211: the station says: power, 1`, `en0 and the station are up for
+    iOS`; wland joined TVIFiber_6259 (wlan.conf), `bridge: link up`. **Settings shows Wi-Fi but the switch is grey
+    (user): wifid never started** (no `exec wifid`). ios-flame's fix: (1) ADT `/arm-io/wlan` (launchd's
+    _LimitLoadToDeviceTree for com.apple.wifid) -> **tools/mkadt.py adds it for fajita only** (device_type 'wlan',
+    compatible 'fajita,wcn3990'); (2) configd's /var/preferences/SystemConfiguration/preferences.plist had no network
+    services (here too: only `System`, 192 bytes; copy in backup/fajita-sc-20261122/) -> move it aside so configd
+    builds a default configuration with a Wi-Fi service. Image **0138w** = 0138p + the wlan ADT (built). Not run yet.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
