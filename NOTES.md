@@ -188,6 +188,10 @@ table at the top). State:
     because SMEM is not trapped; the kernel USB driver's single loads work. **Kernel patch 0135:** pm_ld32/pm_st32 =
     one inline-asm `ldr/str w, [x]` per register (as readl/writel). radio.c additionally shares USB's bank (CB44)
     and writes only one S2CR + one SMR; `wland smmu dry` prints without writing.
+  - **0135p on the phone (2026-11-22; kernel run 45039228940, phone-bin run 45039221515): the SMMU works.** pm_rw now
+    `ldr w10, [x23]` / `str w10, [x23]` on the device window (checked in the disassembly). `wland smmu dry`: no crash
+    (cause confirmed); ABL's SMRs 0-5 (0x880, 0xc80 -> S2CR 0; 0xa0/0xc0 -> 1; 0xe0/0x100 -> 2), USB SMR6 0x740 ->
+    CB44 (CBAR 0x10000, SCTLR 0). `wland smmu`: S2CR7 = 0x2c, SMR7 = 0x80010040 -> ok, GFSR 0. Next: `wland up`.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
