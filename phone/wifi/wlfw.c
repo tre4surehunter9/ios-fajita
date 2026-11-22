@@ -410,7 +410,7 @@ int wlfw_start(void)
 			return -1;
 		/* cnss-daemon sends the MAC address (0x33) before the cal report: a locally administered one */
 		qmi_start(&q, QMI_REQUEST, 0, MAC_ADDR);
-		static const uint8_t mac[6] = { 0x02, 0x50, 0x49, 0x58, 0x45, 0x4c };
+		static const uint8_t mac[6] = { 0x02, 0x66, 0x6a, 0x00, 0x00, 0x01 };	/* fajita: the ADT's mac-address-wifi0 (tools/mkadt.py); ios-flame used 02:50:49:58:45:4c */
 		qmi_tlv(&q, 0x10, mac, 6);
 		printf("wlfw: mac address -> %d\n", request(&q, &r, 5000));
 		if (!getenv("WLFW_NO_CALREPORT")) {

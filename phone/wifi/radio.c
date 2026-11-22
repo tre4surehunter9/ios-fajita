@@ -27,7 +27,7 @@
 #define LOG(fmt, ...)	printf("[%6llu] radio: " fmt "\n", (unsigned long long)link_ms(), ##__VA_ARGS__)
 #define MIN(a, b)	((a) < (b) ? (a) : (b))
 
-const uint8_t radio_mac[6] = { 0x02, 0x50, 0x49, 0x58, 0x45, 0x4c };	/* what WLFW was given (wlfw.c) */
+const uint8_t radio_mac[6] = { 0x02, 0x66, 0x6a, 0x00, 0x00, 0x01 };	/* what WLFW was given (wlfw.c): fajita ADT mac-address-wifi0 */
 
 /* ---------------------------------------------------------------- host memory */
 
