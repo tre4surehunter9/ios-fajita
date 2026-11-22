@@ -96,6 +96,12 @@ table at the top). State:
     sweetrun (`--run sweetcmd`). PC side: `tools/sweet-phone.py put/get/read/mkdir/rm/chmod/ln/run`.
     Next: CI (xnu + phone), image `0132c` = 0131b boot-args (sweetusb=2) + `--run sweetcmd`, `fastboot boot` on the
     user's yes, then put/get/run tests.
+  - **0132c on the phone (2026-11-21, `fastboot boot`): the file channel works.** `SWEET FILES: listening on
+    192.168.7.2 tcp 2223`, `sweetcmd: listening on 192.168.7.2 tcp 2224` (via sweetrun). 3 MB random file put + get:
+    identical, 2.6 s (~1.1 MB/s). `run` streams output and exit codes (`ioreg -c SweetBattery` 0, `nvram -p` 1:
+    "not supported"). iOS has no ls/uname/sysctl; present: /usr/sbin/ioreg, /usr/sbin/nvram, /usr/bin/footprint.
+    At 0132c's ioreg: 879/2092 mAh, 3416 mV, external + charging Yes, amperage -1021 mA: still draining on the PC
+    port. Cosmetic: LegacyBatteryInfo "Amperage" is the signed value cast to UInt32. boot_a still 0131d.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
