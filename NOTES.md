@@ -128,6 +128,12 @@ table at the top). State:
     booted; wland allocates 428 before the boot). TCSR mutex 0x1f40000 is SDM845's too. Next: `wland boot` (power
     votes, QMP, SMP2P item, PAS init_image/mem_setup/auth_and_reset over SCM), on the user's yes; a refused PAS
     means porting the MBA path. A hung SMC wedges a CPU: recover with a forced reboot.
+  - **wland boot #1 (0133c, 2026-11-21, user's yes; firmware split + copied, 64 MB in 55 s):** `smp2p-init`: item 428
+    at 0x860b9030, modem kicked. `boot`: cx.lvl and mss.lvl voted to index 7 of 16 (-> 0); **PAS init_image (id 4,
+    8412-byte metadata at 0x104884000) -> 0xffcfffbb (-3145797)**, not a standard SCM error; nothing hung, nothing
+    loaded. Guesses (unproven): SDM845 TZ has no modem PAS (mainline/downstream boot it via MBA), or the metadata
+    above 4 GiB (all XNU memory is in the upper bank here). Cheap check: metadata in free low DRAM (e.g. the
+    0xE0000000 pool region); otherwise port q6v5_mss's MBA boot. Logs: logs/wland-boot-1.txt.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
