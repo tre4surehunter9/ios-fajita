@@ -4,6 +4,13 @@
 
 ### fajita (OnePlus 6T) port, branch `fajita` (handoff 2026-11-21, latest)
 
+- **RESUME HERE (2026-11-22 evening):** Wi-Fi works in Settings (0138w + wland from phone-bin run 45049923892, new MAC
+  02:66:6a:00:00:01, not yet on the phone). On the phone: wlan.conf moved to /var/local/wlan.conf.off (Settings-join
+  test pending). boot_a = 0131d (no Wi-Fi kernel). off-mode-charge set to 0 (user's yes; revert with
+  `fastboot oem off-mode-charge 1`). Next, in order: (1) charger patch 0139 (fast charge 1 A + ICL from USB-C Rp, not
+  written); (2) Settings join test on 0138w; (3) Wi-Fi boot job (`wlandjob install`) + a daily image with 0138 + the
+  wlan ADT, flash on the user's yes; (4) IPA installing; (5) 8 GiB RAM. Battery is the limit: charge before tests.
+
 Details, boot log and hardware facts: `PORTING.md`; GPU, display and performance: `GPU-PLAN.md` (status
 table at the top). State:
 - **Handoff 2026-11-21 (resumed after a ~2-week pause; written from git history only).** The 2026-11-02..04
