@@ -1,0 +1,134 @@
+diff --git a/bsd/dev/sweet_spmi.c b/bsd/dev/sweet_spmi.c
+index 1981490..f8b7a84 100644
+--- a/bsd/dev/sweet_spmi.c
++++ b/bsd/dev/sweet_spmi.c
+@@ -13,6 +13,7 @@
+ #include "sweet_spmi.h"
+ 
+ extern vm_offset_t ml_io_map(vm_offset_t, vm_size_t);
++extern bool sweet_board_is(const char *want);
+ 
+ #define SP_CORE_PA 0x0c440000u
+ #define SP_OBS_PA  0x0e600000u
+@@ -88,9 +89,13 @@ sweet_spmi_read(unsigned sid, unsigned addr, uint8_t *out)
+ {
+ 	/* Restrict access to the battery blocks; keys retain their own lanes. */
+ 	unsigned peripheral = addr >> 8;
+-	if (!sp_ready || !out || sid != 0 || addr > 0xffffu ||
++	/* fajita: PMI8998 (USID 2) charger blocks CHGR 0x10, USBIN 0x13 and MISC
++	 * 0x16 (mainline qcom_pmi8998_charger.c), read-only like the rest. */
++	bool fajita_chg = sid == 2 && (peripheral == 0x10 || peripheral == 0x13 ||
++	    peripheral == 0x16) && sweet_board_is("oneplus,fajita");
++	if (!sp_ready || !out || addr > 0xffffu || (!fajita_chg && (sid != 0 ||
+ 	    (peripheral != 0x10 && peripheral != 0x11 && peripheral != 0x12 &&
+-	    peripheral != 0x13 && peripheral != 0x48)) {
++	    peripheral != 0x13 && peripheral != 0x48)))) {
+ 		return -1;
+ 	}
+ 	IOLockLock(sp_lock);
+diff --git a/iokit/Kernel/arm/SweetBattery.cpp b/iokit/Kernel/arm/SweetBattery.cpp
+index 24da44a..23eb938 100644
+--- a/iokit/Kernel/arm/SweetBattery.cpp
++++ b/iokit/Kernel/arm/SweetBattery.cpp
+@@ -5,7 +5,8 @@
+  * See report.md for binary evidence, register provenance and integration.
+  * fajita (OnePlus 6T), sweetbattery=1: the bq27411 fuel gauge instead
+  * (bsd/dev/sweet_fg.c, read-only), its own SOC, capacities, current and
+- * temperature. First read after sweetfgdelay seconds (default 90, after touch's
++ * temperature; plugged in / charging / full from the PMI8998 charger's status
++ * registers over SPMI (USID 2, read-only). First read after sweetfgdelay seconds (default 90, after touch's
+  * start-up), then every 30 s; static fallback until then and if the gauge fails.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+@@ -34,7 +35,8 @@ public:
+ private:
+ 	IOWorkLoop *fLoop;
+ 	IOTimerEventSource *fTimer;
+-	bool fTimerAdded, fRunning, fReal, fFajita, fGaugeReady;
++	bool fTimerAdded, fRunning, fReal, fFajita, fGaugeReady, fSpmiReady;
++	int fLastExternal, fLastCharging;
+ 	int fLastMode;
+ 	unsigned fGaugeFails, fPolls;
+ 	/* Capacity scale and temperature for publish(); sweet keeps 5020 mAh, 25 C. */
+@@ -64,7 +66,8 @@ SweetBattery::init(OSDictionary *dictionary)
+ 	}
+ 	fLoop = NULL;
+ 	fTimer = NULL;
+-	fTimerAdded = fRunning = fReal = fFajita = fGaugeReady = false;
++	fTimerAdded = fRunning = fReal = fFajita = fGaugeReady = fSpmiReady = false;
++	fLastExternal = fLastCharging = -1;
+ 	fGaugeFails = fPolls = 0;
+ 	fMaxMah = fDesignMah = 5020;
+ 	fCentiC = 2500;
+@@ -282,16 +285,17 @@ SweetBattery::pollGauge(void)
+ 		} else {
+ 			fGaugeReady = true;
+ 		}
++		fSpmiReady = sweet_spmi_init() == 0;
+ 	}
+-	uint16_t soc, mv, flags, temp, rem, full, current;
++	uint16_t soc, mv, flags, temp, rem, fcc, current;
+ 	bool valid = fReal && fGaugeReady &&
+ 	    !sweet_fg_word(0x1c, &soc) && !sweet_fg_word(0x04, &mv) &&
+ 	    !sweet_fg_word(0x06, &flags) && !sweet_fg_word(0x02, &temp) &&
+-	    !sweet_fg_word(0x0c, &rem) && !sweet_fg_word(0x0e, &full) &&
++	    !sweet_fg_word(0x0c, &rem) && !sweet_fg_word(0x0e, &fcc) &&
+ 	    !sweet_fg_word(0x10, &current);
+ 	/* An unconfigured or misread gauge must not become 0% battery. */
+ 	valid = valid && soc <= 100 && mv >= 2800 && mv <= 4600 &&
+-	    full >= 500 && full <= 6000 && temp >= 2331 && temp <= 3631;
++	    fcc >= 500 && fcc <= 6000 && temp >= 2331 && temp <= 3631;
+ 	if (!valid) {
+ 		if (fGaugeReady && (fPolls++ % 10) == 0) {
+ 			IOLog("SWEET BATTERY: gauge read failed or implausible; fallback\n");
+@@ -307,21 +311,40 @@ SweetBattery::pollGauge(void)
+ 	int ma = (int16_t)current;
+ 	bool fullFlag = (flags & (1u << 9)) != 0;	/* FC */
+ 	bool discharging = (flags & 1u) != 0;		/* DSG */
+-	/* No charger readout yet (PMI8998 SMB2 is not driven): external power is
+-	 * inferred from the gauge, charging current or not discharging. */
+-	bool charging = ma > 0 && !fullFlag;
+-	bool external = ma > 0 || !discharging;
+-	fMaxMah = full;
++	/* PMI8998 SMB2 (mainline qcom_pmi8998_charger.c, base 0x1000): POWER_PATH_STATUS
++	 * 0x160b USE_USBIN (bit 4) + VALID_INPUT (bit 0) = USB power in use;
++	 * BATTERY_CHARGER_STATUS_1 0x1006 bits 2:0: 0-4 charging, 5-6 full,
++	 * 7 disabled; STATUS_2 0x1007 bit 5 battery over-voltage. */
++	uint8_t path = 0, st1 = 0, st2 = 0;
++	bool chgValid = fSpmiReady && !sweet_spmi_read(2, 0x160b, &path) &&
++	    !sweet_spmi_read(2, 0x1006, &st1) && !sweet_spmi_read(2, 0x1007, &st2);
++	bool external, charging, charged;
++	if (chgValid) {
++		unsigned state = st1 & 7u;
++		external = (path & 0x10u) && (path & 1u);
++		charging = external && state <= 4 && !(st2 & 0x20u);
++		charged = external && (state == 5 || state == 6);
++	} else {
++		/* Fallback: inferred from the gauge, charging current or not discharging. */
++		charging = ma > 0 && !fullFlag;
++		external = ma > 0 || !discharging;
++		charged = fullFlag && external;
++	}
++	fMaxMah = fcc;
+ 	fDesignMah = 3700;	/* OnePlus 6T rated capacity */
+ 	fCentiC = (unsigned)((int)temp * 10 - 27315 > 0 ? (int)temp * 10 - 27315 : 0);
+ 	fTempMeasured = true;
+ 	unsigned percent = soc;
+-	if ((fPolls++ % 10) == 0) {
+-		IOLog("SWEET FG: soc=%u%% %u mV %d mA flags=%#x rem=%u full=%u mAh %u.%u C\n",
+-		    soc, mv, ma, flags, rem, full, fCentiC / 100, (fCentiC / 10) % 10);
++	if ((fPolls++ % 10) == 0 || (int)external != fLastExternal ||
++	    (int)charging != fLastCharging) {
++		IOLog("SWEET FG: soc=%u%% %u mV %d mA flags=%#x rem=%u full=%u mAh %u.%u C "
++		    "chg=%d path=%#x st=%#x/%#x -> external=%d charging=%d full=%d\n",
++		    soc, mv, ma, flags, rem, fMaxMah, fCentiC / 100, (fCentiC / 10) % 10,
++		    chgValid, path, st1, st2, external, charging, charged);
++		fLastExternal = external;
++		fLastCharging = charging;
+ 	}
+-	publish(percent, mv, ma, external, external, charging, fullFlag && external,
+-	    true, true);
++	publish(percent, mv, ma, external, external, charging, charged, true, true);
+ }
+ 
+ void

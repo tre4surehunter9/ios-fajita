@@ -62,6 +62,15 @@ table at the top). State:
     do not apply without CI's staging scripts). CI build trees have expired, so no local compile check.
     Next: push, xnu CI run, image `0130b` = 0128g boot-args + `sweetbattery=1 sweetusb=2` via `fastboot boot`,
     read the `SWEET FG` lines over the USB log (`tools/sweet-usblog.py`).
+  - **0130 on the phone (image 0130b, `fastboot boot`, 2026-11-21; the first `fastboot boot` hung, worked after
+    re-entering fastboot):** gauge answers on the first try: `se10 fw=0x300 proto=3` (ABL-loaded I2C FW),
+    `soc=54% 3870 mV 0 mA flags=0x109 rem=1129 full=2092 mAh 31.5 C`. iOS shows the real percentage (user).
+    AverageCurrent reads exactly 0 mA while iOS runs on the GPU, so the gauge's current sense is likely unused on
+    this board (unproven); FCC 2092 of 3700 mAh rated. With current 0 and DSG set, the 0130 heuristic says not
+    charging (user: "not showing charging") while on the PC's USB.
+  - **Kernel patch 0131:** sweet_spmi reads PMI8998 (USID 2) CHGR/USBIN/MISC on fajita only; SweetBattery takes
+    external/charging/full from POWER_PATH_STATUS 0x160b and BATTERY_CHARGER_STATUS_1/2 0x1006/0x1007 (mainline
+    qcom_pmi8998_charger.c); logs a `SWEET FG` line on every change. Gauge heuristic stays as fallback.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
