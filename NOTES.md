@@ -282,6 +282,14 @@ table at the top). State:
     (sysctl KERN_PROC + kill; phone-bin run 45048458064, /var/local/bin/pkill) `pkill configd` -> launchd restarts it ->
     preferences.plist 810 bytes with **one service: en0, AirPort**. Then **configd's DHCP: 192.168.1.53, default route
     via 192.168.1.1**, PC ping 3/3. (Should persist across boots: to verify.)
+  - **Then the link dropped (user: "disassociated itself"):** wland at 229 s: background scan while joined (wifid
+    asks SCAN_REQ ~every 10 s; wland's radio_scan_now at most every 15 s, off the home channel); at 232.220 s `the AP
+    ended the link, reason 7` (class 3 frame from a non-associated STA); 232.446 s **modem ERR-FATAL**. SFR (SMEM item
+    421, `wland item 421`): **`err_qdi.c:456:EF:wlan_process:1:cmnos_thread.c:3921:Asserted in
+    wlan_vdev.c:_wlan_vdev_down:3448`**: the WLAN firmware asserted taking its vdev down on the disconnect. Before
+    that: tx 930, rx 1539 frames over en0. wland's rejoin (3 s later) could not work. Next: compare radio.c's
+    background-scan and disconnect handling with ath10k (scan while associated, peer/vdev order on kickout), and
+    consider fewer background scans while joined. A modem restart needs a phone reboot (untested in one boot).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
