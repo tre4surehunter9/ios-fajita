@@ -233,6 +233,12 @@ table at the top). State:
     wrap/unwrap (SweetKeyStore: keychain items such as Wi-Fi passwords). Applied to our tree except the build lists
     and sweet_ufs.c init (merged by hand) and **SweetSurface's 10-bit-format change left out** (display path; a test
     of its own). `sweetwifid=0` drops /dev/wlan and en0 (wland then keeps its own utun).
+    Built: xnu run 45043204861 (xnu/out-0136). Images: **0136p** (test: sweetusb=2 + `--run sweetcmd`, sha256
+    dbee9251...) and **0136d** (daily candidate: 0131d's boot-args, sweetusb=1, sha256 d7a419ea...). Phone programs:
+    phone-bin run 45042847072 (work/phone-bin-job: wland with the CB44 fallback, wlandjob, netsvc, nettest, sweetcmd).
+    **Test order (on a charged battery; ask before each step):** (1) boot 0136p, put wland + wlandjob, `wlandjob
+    install`; (2) `fastboot boot` 0136d: Wi-Fi at boot without the PC (ping 192.168.1.53; Settings -> Wi-Fi shows the
+    network?); (3) back on 0136p: read /var/local/wland.log; (4) on the user's yes, flash 0136d to boot_a.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
