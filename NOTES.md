@@ -108,6 +108,12 @@ table at the top). State:
     sweet_rpmh.c already had flame's generic rh_send (GPU work), so only `sweet_rpmh_write` was added (".lvl" =
     ARC, else VRM; no BCM). Root 0600, `sweetpmem=0` drops it. Test plan: file-server READ of /dev/pmem at SMEM
     0x86000000 (reserved DRAM) from the PC.
+  - **0133c on the phone (2026-11-21, `fastboot boot`): /dev/pmem works.** `SWEET PMEM: /dev/pmem ready (major 19)`.
+    READ /dev/pmem via the file server: SMEM at 0x86000000 has version 0x000c0000 at +0x40 (v12, global heap),
+    initialized=1 at +0xc0, and `$TOC` with 15 partitions at 0x861ff000 = what ios-flame's smem.c expects.
+    Next: copy ios-flame phone/wifi in (MIT) with the SDM845 changes (APCS IPC 0x1799000c, MSA 0x8df00000, rmtfs
+    0xf5b01000, rails l5a/l7a/l17a/l25a/l23a, board-2.bin); try their PAS modem boot first, MBA (q6v5_mss) if TZ
+    refuses; then firmware over the file channel and the per-phone rmtfs partitions (ask the user).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
