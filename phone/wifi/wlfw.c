@@ -331,7 +331,9 @@ int wlfw_start(void)
 	if (!fw_ready) {
 		if (!getenv("WLFW_NO_HOSTCAP")) {	/* downstream icnss never sends it */
 			qmi_start(&q, QMI_REQUEST, 0, HOST_CAP);
-			qmi_tlv_u32(&q, 0x10, 0);	/* daemon_support */
+			/* SDM845 (fajita &wifi: qcom,snoc-host-cap-8bit-quirk): daemon_support as ONE byte, as mainline
+			 * ath10k's wlfw_host_cap_8bit_req_msg_v01_ei; the 32-bit form is answered with error 1 (malformed). */
+			qmi_tlv_u8(&q, 0x10, 0);	/* daemon_support */
 			int e = request(&q, &r, 5000);
 			if (e && e != 0x5e)		/* QMI_ERR_NOT_SUPPORTED: older firmware */
 				return -1;
