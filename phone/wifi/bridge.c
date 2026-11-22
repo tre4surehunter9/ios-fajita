@@ -50,6 +50,8 @@ static void bridge_link(int up)
 	struct fw_link l;
 	memset(&l, 0, sizeof(l));
 	l.up = (uint8_t)(up != 0);
+	if (up)
+		last_bg_scan = link_ms();	/* fajita: no background scan in the first 60 s after a join */
 	l.ssid_len = (uint8_t)radio_ssid(l.ssid, l.bssid);
 	printf("[%6llu] bridge: link %s '%.*s'\n", (unsigned long long)link_ms(), up ? "up" : "down", l.ssid_len, l.ssid);
 	bridge_send(FW_LINK, &l, sizeof(l));
@@ -155,8 +157,11 @@ void bridge_poll(void)
 		case FW_SCAN:
 			if (scan_pending)
 				break;			/* the scan under way answers it */
-			if (radio_joined() && link_ms() - last_bg_scan < 15000) {
-				bridge_list(0);		/* joined: a background scan at most every 15 s; what is known */
+			/* fajita: joined, a background scan at most every 60 s (was 15 s) and not in the first 60 s
+			 * after a join (last_bg_scan is set on link up): wifid asks every ~10 s while it has no known
+			 * network, and the AP kicked us 3 s after a 4 s background scan (2026-11-22) */
+			if (radio_joined() && link_ms() - last_bg_scan < 60000) {
+				bridge_list(0);		/* what is known */
 				break;
 			}
 			scan_pending = 1;

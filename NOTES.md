@@ -290,6 +290,12 @@ table at the top). State:
     that: tx 930, rx 1539 frames over en0. wland's rejoin (3 s later) could not work. Next: compare radio.c's
     background-scan and disconnect handling with ath10k (scan while associated, peer/vdev order on kickout), and
     consider fewer background scans while joined. A modem restart needs a phone reboot (untested in one boot).
+  - **Fix (written 2026-11-22, not run):** radio.c w_teardown now steps like ath10k: VDEV_DOWN, settle 100 ms,
+    PEER_DELETE, settle 300 ms, VDEV_STOP and wait up to 1 s for VDEV_STOPPED (0x5002), pumping ce_poll meanwhile;
+    s_tearing guards against a second teardown from events during the waits (w_link_lost ignores them). bridge.c:
+    while joined, wifid's scans are answered from the cached list unless the last background scan is >= 60 s old
+    (was 15 s), and the clock restarts at every link up (no background scan in the first 60 s after a join).
+    Unproven which of the two caused the kickout/assert; both are cheap.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16

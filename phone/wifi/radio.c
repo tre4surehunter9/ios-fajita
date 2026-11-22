@@ -1172,6 +1172,7 @@ static void htt_rx(const uint8_t *p, uint32_t len)
 #define CMD_MGMT_TX_SEND	0x7008
 #define CMD_STA_PS_MODE		0x9001
 #define EV_VDEV_START_RESP	0x5001
+#define EV_VDEV_STOPPED		0x5002	/* fajita: waited for in w_teardown (ath10k vdev_stop) */
 #define EV_PEER_STA_KICKOUT	0x6001
 #define EV_ROAM			0xb001	/* {vdev, reason, rssi}; reason 2 = beacon miss */
 #define TAG_VDEV_START		0x58
@@ -1573,15 +1574,43 @@ static void w_link(int up)
 		radio_link_hook(up);
 }
 
+/*
+ * fajita: the teardown in steps, as ath10k does it (bss_disassoc's vdev_down, then the peer delete it waits on,
+ * then vdev_stop waiting for VDEV_STOPPED), instead of three commands back to back: the WLAN firmware asserted in
+ * _wlan_vdev_down 226 ms after a back-to-back teardown (2026-11-22, SFR in SMEM 421) and took the modem down.
+ * Events are pumped while waiting (ce_poll); s_tearing keeps them from starting a second teardown.
+ */
+static int s_tearing, s_stopped;
+
+static void w_settle(unsigned ms, const int *done)
+{
+	uint64_t end = link_ms() + ms;
+	while (link_ms() < end && !(done && *done)) {
+		ce_poll();
+		delay_ms(2);
+	}
+}
+
 static void w_teardown(void)
 {
+	if (s_tearing)
+		return;
+	s_tearing = 1;
 	if (s_state >= S_START) {
-		if (s_state >= S_4WAY)
+		if (s_state >= S_4WAY) {
 			w_vdev_simple(CMD_VDEV_DOWN, TAG_VDEV_DOWN);
-		if (s_state >= S_AUTH)
+			w_settle(100, NULL);
+		}
+		if (s_state >= S_AUTH) {
 			w_peer(CMD_PEER_DELETE, TAG_PEER_DELETE, 0);
+			w_settle(300, NULL);
+		}
+		s_stopped = 0;
 		w_vdev_simple(CMD_VDEV_STOP, TAG_VDEV_STOP);
+		w_settle(1000, &s_stopped);
+		LOG("join: torn down%s", s_stopped ? "" : " (no VDEV_STOPPED in 1 s)");
 	}
+	s_tearing = 0;
 	if (s_state == S_UP)
 		w_link(0);
 	s_state = S_IDLE;
@@ -1604,6 +1633,8 @@ static void w_join_end(int result)
 /* a joined link went away: down, and the result says so (ENOTCONN) so the caller can join again; rescan first */
 static void w_link_lost(const char *why)
 {
+	if (s_tearing)
+		return;
 	LOG("join: link lost (%s)", why);
 	w_teardown();
 	s_result = ENOTCONN;
@@ -1712,7 +1743,9 @@ static void sta_wmi_event(uint32_t id, const uint8_t *t, uint32_t len)
 	if (len < 4u + l)
 		return;
 	memcpy(v, t + 4, MIN((uint32_t)l, (uint32_t)sizeof(v)));
-	if (id == EV_VDEV_START_RESP && l >= 16) {	/* {vdev, req, type, status} */
+	if (id == EV_VDEV_STOPPED) {
+		s_stopped = 1;
+	} else if (id == EV_VDEV_START_RESP && l >= 16) {	/* {vdev, req, type, status} */
 		s_start_status = (int32_t)v[3];
 		s_start_resp = 1;
 	} else if (id == EV_PEER_STA_KICKOUT && s_state == S_UP) {
@@ -1994,6 +2027,7 @@ static void wmi_rx(const uint8_t *d, uint32_t len)
 		scan_mgmt_rx(d + 4, len - 4);
 		break;
 	case EV_VDEV_START_RESP:
+	case EV_VDEV_STOPPED:
 	case EV_PEER_STA_KICKOUT:
 	case EV_ROAM:
 		sta_wmi_event(id, d + 4, len - 4);
