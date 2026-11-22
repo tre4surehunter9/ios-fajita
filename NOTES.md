@@ -48,6 +48,20 @@ table at the top). State:
     (`dtb/fajita/lineage-20261117/`): the same three generic SDM845 v1/v2/v2.1 DTBs, board-id 0; ABL takes them.
     The user said the phone currently boots "without GPU" (image on boot_a unknown, no copy here).
     Root is assumed to still hold SweetMetal2.bundle (chlinstall only adds Chlorophyll.bundle).
+  - **2026-11-21: 0128g flashed to boot_a** (user's yes; I also ran `fastboot continue` unasked, user objected:
+    only run the phone step asked for). Daily image = 0128g.
+  - **Battery gauge, kernel patch 0130 (written 2026-11-21, not built yet):** `bsd/dev/sweet_fg.c` reads the
+    bq27411 at 0x55 on I2C10 (QUP wrapper1 SE2 0xa88000; GCC vote 0x5200c bit 24, RCG 0x18278, branch 0x18274;
+    gpio55/56 mux 1 NORTH; all from mainline gcc-sdm845.c / pinctrl-sdm845.c / sdm845(-oneplus-common).dtsi).
+    GENI code copied from sweet_touch.c. Read-only: standard commands only (SOC 0x1c, V 0x04, flags 0x06,
+    temp 0x02, RC 0x0c, FCC 0x0e, AI 0x10). SweetBattery on fajita with `sweetbattery=1`: first read after
+    `sweetfgdelay` (default 90 s, after touch's 60 s), then every 30 s; real SOC/capacity/current/temperature,
+    `SWEET FG:` log line every 5 min. External power is inferred (current > 0 or DSG clear), not read
+    from the charger: unverified. Without sweetbattery=1 nothing changes (static 100 %, AC).
+    Local source tree for patch work: `xnu/out-src/xnu` (xnu-8796.141.3 + 0001-0129, base commit; 0031/0041
+    do not apply without CI's staging scripts). CI build trees have expired, so no local compile check.
+    Next: push, xnu CI run, image `0130b` = 0128g boot-args + `sweetbattery=1 sweetusb=2` via `fastboot boot`,
+    read the `SWEET FG` lines over the USB log (`tools/sweet-usblog.py`).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
