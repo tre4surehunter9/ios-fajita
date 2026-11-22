@@ -11,3 +11,5 @@ xnu/out/
 xnu/out-*/
 __pycache__/
 logs/
+# local artifacts: root images, CI downloads, tools builds (NOTES.md)
+work/
