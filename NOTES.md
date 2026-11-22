@@ -192,6 +192,14 @@ table at the top). State:
     `ldr w10, [x23]` / `str w10, [x23]` on the device window (checked in the disassembly). `wland smmu dry`: no crash
     (cause confirmed); ABL's SMRs 0-5 (0x880, 0xc80 -> S2CR 0; 0xa0/0xc0 -> 1; 0xe0/0x100 -> 2), USB SMR6 0x740 ->
     CB44 (CBAR 0x10000, SCTLR 0). `wland smmu`: S2CR7 = 0x2c, SMR7 = 0x80010040 -> ok, GFSR 0. Next: `wland up`.
+  - **`wland up 180` #2 (0135p, 2026-11-22; logs/wland-up-2.txt): up to WLFW, everything works.** SMMU (already
+    routed), rails ldoa5/7/17/25/23 + rfclka2 -> 0, QDSS QMP acked, MBA boot as before (ready after 100 ms), GLINK
+    (VERSION 1, IPCRTR open), QRTR (dozens of modem services), rmtfs at 0xf5b01000 (hyp_assign -> 0; modem opens
+    modem_fs1/fs2/fsg/fsc, the *_oem_* and /oem/nvbk files -> -1 absent, alloc 2 MiB), pd-mapper, TFTP (mcfg.tmp,
+    server_check.txt), modem state 6 (ready + handover), pd-mapper kernel/elf_loader, **WLFW service 0x45 at 0:54**,
+    registered for indications (fw status 0). Then **HOST_CAP (0x34) -> result 1 error 1 (malformed)**: fajita's DT
+    has qcom,snoc-host-cap-8bit-quirk. **Fix:** daemon_support as one byte (mainline
+    wlfw_host_cap_8bit_req_msg_v01_ei); wland phone-bin run 45040361613. The modem kept running.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
