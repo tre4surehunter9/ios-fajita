@@ -271,6 +271,17 @@ table at the top). State:
     compatible 'fajita,wcn3990'); (2) configd's /var/preferences/SystemConfiguration/preferences.plist had no network
     services (here too: only `System`, 192 bytes; copy in backup/fajita-sc-20261122/) -> move it aside so configd
     builds a default configuration with a Wi-Fi service. Image **0138w** = 0138p + the wlan ADT (built). Not run yet.
+  - **0138w on the phone (2026-11-22): wifid runs, iOS does Wi-Fi on en0.** `exec wifid` at boot (the wlan ADT node).
+    preferences.plist moved aside before the boot (copy on the phone: preferences.plist.pre-wifi, and in
+    backup/fajita-sc-20261122/). With `wland up 300` (logs/wland-up-6.txt): wifid's Apple80211: SCAN_REQ (13/24
+    channels) + SCAN_RESULT (13 networks from wland's background scans), CURRENT_NETWORK, POWER, CARD_CAPABILITIES,
+    HW_SUPPORTED_CHANNELS answered; 383/419/115/96/97/COUNTRY_CODE/RATE/NOISE... REFUSED (as on ios-flame); no
+    ASSOCIATE (wland's wlan.conf join came first). Settings: spinner on TVIFiber_6259 (user). configd had again written
+    a services-less preferences.plist at boot (en0 only appears when wland starts) although NetworkInterfaces.plist
+    lists en0 as IEEE80211. **Fix:** remove preferences.plist and restart configd with en0 present: **phone/pkill**
+    (sysctl KERN_PROC + kill; phone-bin run 45048458064, /var/local/bin/pkill) `pkill configd` -> launchd restarts it ->
+    preferences.plist 810 bytes with **one service: en0, AirPort**. Then **configd's DHCP: 192.168.1.53, default route
+    via 192.168.1.1**, PC ping 3/3. (Should persist across boots: to verify.)
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
