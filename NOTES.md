@@ -239,6 +239,10 @@ table at the top). State:
     **Test order (on a charged battery; ask before each step):** (1) boot 0136p, put wland + wlandjob, `wlandjob
     install`; (2) `fastboot boot` 0136d: Wi-Fi at boot without the PC (ping 192.168.1.53; Settings -> Wi-Fi shows the
     network?); (3) back on 0136p: read /var/local/wland.log; (4) on the user's yes, flash 0136d to boot_a.
+  - **0136p first boot (2026-11-22, user: "just boot it now"): kernel fine, battery died.** fastboot 3411 mV before
+    the boot; log (logs/usb-0136p.txt): `flame wlan: /dev/wlan ready (major 20)`, normal start-up, then the stream
+    stops mid-way, no panic, phone gone from USB (power loss). Nothing of ours was writing; HFS's journal should
+    cover iOS's own writes. Before the next test: charge off, on a wall charger, >= ~3.8 V in fastboot.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
