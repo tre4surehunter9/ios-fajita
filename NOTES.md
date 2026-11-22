@@ -138,6 +138,14 @@ table at the top). State:
     TZ does not PAS-boot the modem.** Next: port the MBA boot from mainline qcom_q6v5_mss.c (sdm845-mss-pil: qdsp6
     0x04080000, rmb 0x04180000, halt regs in tcsr_regs_1 0x3000/0x5000/0x4000, AOSS MSS restart + PDC reset, GCC MSS
     clocks, mba.mbn into mba_region 0x96500000, then the RMB handshake that loads modem.mdt/bNN). Logs: wland-boot-2.txt.
+  - **`wland boot-mba` (written 2026-11-21, not run):** q6v5_start for sdm845_mss step by step in wland.c: mba.mbn to
+    0x96500000; QMP load_state; cx/mx/mss ARC to top; clocks prng (vote 0x52004 b13), iface 0x8a000, snoc_axi 0x8a150;
+    alt reset deassert (PDC 0x0b2e0100 b9, RMB ALT_RESET, AOSS 0x0c2b0000 pulse); bus 0x8a154, mem (vote b10),
+    gpll0_mss (vote b17), mnoc_axi 0x8a004; hyp_assign mpss+mba to the modem; RMB image; QDSP6SS sleep clock,
+    BOOT_CORE_START, BOOT_CMD, FSM, PBL (1), MBA status 1/2; metadata at 0xE1000000 -> status 3; mpss shared,
+    segments relocated from min paddr, PMI start/length, then modem-only -> status 4; SMP2P ready; MBA region back.
+    Failure: halt AXI q6/modem/nc, regions back to HLOS, reset assert (then reboot before retrying: repeated
+    hyp_assigns hung TZ for ios-flame). scm.c hyp_assign now uses a fixed low page 0xE1010000 (pm_alloc is >4 GiB here).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16

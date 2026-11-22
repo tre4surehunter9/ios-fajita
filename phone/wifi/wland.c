@@ -16,6 +16,7 @@
  *   wland qmp MSG           message to the AOP over QMP (opens the link if needed)
  *   wland shutdown          PAS shutdown of the modem
  *   wland boot [META_PA]    power votes + PAS boot of the modem + wait for ready (META_PA: metadata there, fajita)
+ *   wland boot-mba          fajita: the modem through MBA (Linux qcom_q6v5_mss.c sdm845), then wait for ready
  *   wland smmu              the WLAN DMA stream through a translation-off SMMU bank (radio.c)
  *   wland up [SECS]         all of it from a fresh boot, then the radio: copy engines, WMI, passive scans
  *   wland auto              the boot job (launchd org.iosonpixel.wland): `up 0` once per phone boot, log in
@@ -32,6 +33,7 @@
 #include <sys/time.h>
 #include "pmem.h"
 #include "smem.h"
+#include "scm.h"
 #include "link.h"
 #include "rmtfs.h"
 #include "pdmapper.h"
@@ -530,6 +532,378 @@ static int boot_modem(void)
 	return -1;
 }
 
+/* ---- fajita: modem boot through MBA (Linux qcom_q6v5_mss.c, "qcom,sdm845-mss-pil"); SDM845's TZ refuses PAS ----
+ * Order as q6v5_start -> q6v5_mba_load + q6v5_mpss_load for sdm845_mss (has_alt_reset, need_mem_protection).
+ * Addresses: sdm845.dtsi mss_pil (qdsp6 0x04080000, rmb 0x04180000, halt-regs tcsr_regs_1 0x01f60000 +
+ * 0x3000/0x5000/0x4000, resets aoss_reset 0x0c2a0000 + 0x10000 and pdc_reset 0x0b2e0000 + 0x100 bit 9,
+ * clocks gcc-sdm845.c), mba_region 0x96500000 + 2 MB, mpss_region (MPSS_PA). */
+#define MSS_QDSP6	0x04080000ull
+#define MSS_RMB		0x04180000ull
+#define HALT_Q6		0x01f63000ull
+#define HALT_MODEM	0x01f65000ull
+#define HALT_NC		0x01f64000ull
+#define AOSS_MSS_RESTART 0x0c2b0000ull
+#define PDC_SYNC_RESET	0x0b2e0100ull
+#define PDC_MODEM_BIT	(1u << 9)
+#define GCC		0x00100000ull
+#define MBA_PA		0x96500000ull
+#define MBA_SIZE	0x00200000ull
+#define MBA_META_PA	0xE1000000ull	/* metadata in free low DRAM (as `boot 0xE1000000`) */
+#define RMB_MBA_IMAGE	0x00
+#define RMB_PBL_STATUS	0x04
+#define RMB_MBA_COMMAND	0x08
+#define RMB_MBA_STATUS	0x0c
+#define RMB_PMI_META	0x10
+#define RMB_PMI_START	0x14
+#define RMB_PMI_LENGTH	0x18
+#define RMB_MSS_STATUS	0x40
+#define RMB_ALT_RESET	0x44
+#define QDSP6SS_SLEEP	0x3c
+#define QDSP6SS_BOOT_CORE_START 0x400
+#define QDSP6SS_BOOT_CMD 0x404
+#define PERM_HLOS	1u
+#define PERM_MSS	2u
+
+static uint32_t mba_perm = PERM_HLOS, mpss_perm = PERM_HLOS;
+
+/* q6v5_xfer_mem_ownership: give [pa, pa+size) to HLOS (local) and/or the modem (remote) */
+static int mss_assign(uint32_t *perm, int local, int remote, uint64_t pa, uint64_t size)
+{
+	uint32_t want = (local ? PERM_HLOS : 0) | (remote ? PERM_MSS : 0);
+	if (*perm == want)
+		return 0;
+	uint32_t src[2], dst[2];
+	int ns = 0, nd = 0;
+	if (*perm & PERM_HLOS)
+		src[ns++] = VMID_HLOS;
+	if (*perm & PERM_MSS)
+		src[ns++] = VMID_MSS_MSA;
+	if (local)
+		dst[nd++] = VMID_HLOS;
+	if (remote)
+		dst[nd++] = VMID_MSS_MSA;
+	int rc = hyp_assign(pa, (size + 0xfff) & ~0xfffull, src, ns, dst, nd);
+	if (!rc)
+		*perm = want;
+	return rc;
+}
+
+/* a GCC branch: set its enable bit (own register or the 0x52004 vote), then wait for CLK_OFF (bit 31) to clear */
+static int gcc_on(const char *name, uint32_t reg, uint32_t bit, uint32_t halt)
+{
+	wr32(GCC + reg, rd32(GCC + reg) | bit);
+	if (!halt) {
+		usleep(10);
+		printf("mba: clock %s on (%#x |= %#x)\n", name, reg, bit);
+		return 0;
+	}
+	for (int i = 0; i < 200; i++) {
+		if (!(rd32(GCC + halt) & 0x80000000u)) {
+			printf("mba: clock %s on (%#x |= %#x, cbcr %#x)\n", name, reg, bit, rd32(GCC + halt));
+			return 0;
+		}
+		usleep(5);
+	}
+	printf("mba: clock %s stays off (cbcr %#x)\n", name, rd32(GCC + halt));
+	return -1;
+}
+
+/* reset-qcom-aoss.c: write 1, 200-300 us, write 0, 200-300 us */
+static void aoss_mss_reset(void)
+{
+	wr32(AOSS_MSS_RESTART, 1);
+	usleep(300);
+	wr32(AOSS_MSS_RESTART, 0);
+	usleep(300);
+}
+
+static void pdc_modem(int assert)
+{
+	uint32_t v = rd32(PDC_SYNC_RESET);
+	wr32(PDC_SYNC_RESET, assert ? v | PDC_MODEM_BIT : v & ~PDC_MODEM_BIT);
+}
+
+/* q6v5_reset_deassert / q6v5_reset_assert with has_alt_reset */
+static void mss_reset_deassert(void)
+{
+	pdc_modem(1);
+	wr32(MSS_RMB + RMB_ALT_RESET, 1);
+	aoss_mss_reset();
+	wr32(MSS_RMB + RMB_ALT_RESET, 0);
+	pdc_modem(0);
+}
+
+static void mss_reset_assert(void)
+{
+	pdc_modem(1);
+	aoss_mss_reset();
+	pdc_modem(0);
+}
+
+/* q6v5proc_halt_axi_port */
+static void halt_axi(const char *name, uint64_t base)
+{
+	if (rd32(base + 8))
+		return;	/* already idle */
+	wr32(base, 1);
+	for (int i = 0; i < 100 && !rd32(base + 4); i++)
+		usleep(1000);
+	if (!rd32(base + 8))
+		printf("mba: %s port failed halt\n", name);
+	wr32(base, 0);
+}
+
+static int32_t rmb_wait(uint32_t reg, uint32_t want, int ms)
+{
+	for (int i = 0; i < ms; i++) {
+		int32_t v = (int32_t)rd32(MSS_RMB + reg);
+		if (v < 0 || (!want && v) || (want && (uint32_t)v == want))
+			return v;
+		usleep(1000);
+	}
+	return 0x7fffffff;	/* timeout */
+}
+
+static void mss_fail_cleanup(void)
+{
+	halt_axi("q6", HALT_Q6);
+	halt_axi("modem", HALT_MODEM);
+	halt_axi("nc", HALT_NC);
+	mss_assign(&mba_perm, 1, 0, MBA_PA, MBA_SIZE);
+	mss_assign(&mpss_perm, 1, 0, MPSS_PA, MPSS_SIZE);
+	mss_reset_assert();
+	printf("mba: halted, reset asserted, memory back to HLOS\n");
+}
+
+static uint32_t arc_top(const char *res)
+{
+	uint64_t aux;
+	uint32_t len, top = 0;
+	if (!cmddb_aux(res, &aux, &len))
+		for (uint32_t i = 0; i < len / 2; i++)
+			if (aux16(aux, i))
+				top = i;
+	return top;
+}
+
+static int boot_modem_mba(void)
+{
+	/* q6v5_load: the MBA image into its region, while HLOS still owns it */
+	size_t mlen;
+	uint8_t *mba = slurp(FW_DIR "/mba.mbn", &mlen);
+	if (!mba || mlen > 0x100000) {
+		fprintf(stderr, "mba: no %s/mba.mbn (or over 1 MB)\n", FW_DIR);
+		return -1;
+	}
+	if (mba_perm != PERM_HLOS || mpss_perm != PERM_HLOS) {
+		fprintf(stderr, "mba: regions not ours (perm %u/%u): reboot the phone first\n", mba_perm, mpss_perm);
+		return -1;
+	}
+	pm_wr(MBA_PA, mba, (mlen + 3) & ~(size_t)3);
+	free(mba);
+	printf("mba: mba.mbn (%zu bytes) at %llx\n", mlen, MBA_PA);
+
+	/* qcom_q6v5_prepare: tell the AOP; proxy power domains cx, mx, mss at their top levels */
+	qmp_send("{class: image, res: load_state, name: modem, val: on}");
+	uint32_t tcx = arc_top("cx.lvl"), tmx = arc_top("mx.lvl"), tmss = arc_top("mss.lvl");
+	if (vote("cx.lvl", tcx) || vote("mx.lvl", tmx) || vote("mss.lvl", tmss))
+		return -1;
+	printf("mba: voted cx[%u] mx[%u] mss[%u]\n", tcx, tmx, tmss);
+
+	/* proxy clocks (prng; xo stays on while the apps run), reset clocks (iface, snoc_axi) */
+	if (gcc_on("prng", 0x52004, 1u << 13, 0x34004) || gcc_on("iface", 0x8a000, 1, 0x8a000) ||
+	    gcc_on("snoc_axi", 0x8a150, 1, 0x8a150))
+		return -1;
+	mss_reset_deassert();
+	printf("mba: reset deasserted (alt reset), rmb mss status %#x\n", rd32(MSS_RMB + RMB_MSS_STATUS));
+	/* active clocks: bus (q6 memnoc axi), mem (boot rom), gpll0_mss, mnoc_axi (mfab axis) */
+	if (gcc_on("bus", 0x8a154, 1, 0) || gcc_on("mem", 0x52004, 1u << 10, 0x38004) ||
+	    gcc_on("gpll0_mss", 0x52004, 1u << 17, 0) || gcc_on("mnoc_axi", 0x8a004, 1, 0)) {
+		mss_reset_assert();
+		return -1;
+	}
+
+	/* the Q6 may wipe the MPSS region: give it access; the MBA region too */
+	if (mss_assign(&mpss_perm, 0, 1, MPSS_PA, MPSS_SIZE) || mss_assign(&mba_perm, 0, 1, MBA_PA, MBA_SIZE)) {
+		mss_fail_cleanup();
+		return -1;
+	}
+	wr32(MSS_RMB + RMB_MBA_IMAGE, (uint32_t)MBA_PA);
+
+	/* q6v5proc_reset for MSS_SDM845: sleep clock, start core, boot FSM, then PBL */
+	wr32(MSS_QDSP6 + QDSP6SS_SLEEP, rd32(MSS_QDSP6 + QDSP6SS_SLEEP) | 1);
+	int ok = 0;
+	for (int i = 0; i < 200 && !ok; i++) {
+		ok = !(rd32(MSS_QDSP6 + QDSP6SS_SLEEP) & 0x80000000u);
+		usleep(1);
+	}
+	if (!ok) {
+		printf("mba: QDSP6SS sleep clock timed out (%#x)\n", rd32(MSS_QDSP6 + QDSP6SS_SLEEP));
+		mss_fail_cleanup();
+		return -1;
+	}
+	wr32(MSS_QDSP6 + QDSP6SS_BOOT_CORE_START, 1);
+	wr32(MSS_QDSP6 + QDSP6SS_BOOT_CMD, 1);
+	ok = 0;
+	for (int i = 0; i < 1000 && !ok; i++) {
+		ok = rd32(MSS_RMB + RMB_MSS_STATUS) & 1;
+		usleep(10);
+	}
+	if (!ok) {
+		printf("mba: boot FSM did not complete (rmb mss status %#x)\n", rd32(MSS_RMB + RMB_MSS_STATUS));
+		mss_reset_deassert();
+		mss_fail_cleanup();
+		return -1;
+	}
+	int32_t pbl = rmb_wait(RMB_PBL_STATUS, 0, 1000);
+	printf("mba: boot FSM done; PBL status %d\n", pbl);
+	if (pbl != 1) {
+		mss_fail_cleanup();
+		return -1;
+	}
+	int32_t st = rmb_wait(RMB_MBA_STATUS, 0, 5000);
+	printf("mba: MBA status %d (1 = xpu unlocked, 2 = unlocked + scribbled)\n", st);
+	if (st != 1 && st != 2) {
+		mss_fail_cleanup();
+		return -1;
+	}
+
+	/* q6v5_mpss_load: metadata (ELF header + program headers + hash) for MBA to check */
+	size_t mdlen;
+	uint8_t *mdt = slurp(FW_DIR "/modem.mdt", &mdlen);
+	if (!mdt) {
+		fprintf(stderr, "mba: no %s/modem.mdt\n", FW_DIR);
+		mss_fail_cleanup();
+		return -1;
+	}
+	uint32_t phoff, phnum = 0;
+	memcpy(&phoff, mdt + 0x1c, 4);
+	memcpy(&phnum, mdt + 0x2c, 2);
+	struct phdr *ph = (struct phdr *)(mdt + phoff);
+	int hash = -1;
+	for (uint32_t i = 0; i < phnum; i++)
+		if (((ph[i].flags >> 24) & 7) == 2)
+			hash = (int)i;
+	size_t ehsz = phoff + 32ull * phnum;
+	if (hash < 0 || ph[hash].offset + ph[hash].filesz > mdlen) {
+		fprintf(stderr, "mba: no hash segment in modem.mdt\n");
+		mss_fail_cleanup();
+		return -1;
+	}
+	size_t meta_len = ehsz + ph[hash].filesz;
+	uint8_t *meta = calloc(1, meta_len + 4);
+	memcpy(meta, mdt, ehsz);
+	memcpy(meta + ehsz, mdt + ph[hash].offset, ph[hash].filesz);
+	pm_wr(MBA_META_PA, meta, (meta_len + 3) & ~(size_t)3);
+	free(meta);
+	wr32(MSS_RMB + RMB_PMI_LENGTH, 0);
+	uint32_t meta_perm = PERM_HLOS;
+	if (mss_assign(&meta_perm, 0, 1, MBA_META_PA, meta_len)) {
+		mss_fail_cleanup();
+		return -1;
+	}
+	wr32(MSS_RMB + RMB_PMI_META, (uint32_t)MBA_META_PA);
+	wr32(MSS_RMB + RMB_MBA_COMMAND, 1);	/* META_DATA_READY */
+	st = rmb_wait(RMB_MBA_STATUS, 3, 1000);
+	printf("mba: metadata (%zu bytes at %llx) -> status %d (3 = authenticated)\n", meta_len, MBA_META_PA, st);
+	mss_assign(&meta_perm, 1, 0, MBA_META_PA, meta_len);
+	if (st != 3) {
+		mss_fail_cleanup();
+		return -1;
+	}
+
+	/* segments: the MPSS region back to HLOS, shared during the load, relocatable at its lowest paddr */
+	mss_assign(&mpss_perm, 1, 0, MPSS_PA, MPSS_SIZE);
+	if (mss_assign(&mpss_perm, 1, 1, MPSS_PA, MPSS_SIZE)) {
+		mss_fail_cleanup();
+		return -1;
+	}
+	uint64_t lo = ~0ull;
+	int reloc = 0;
+	for (uint32_t i = 0; i < phnum; i++)
+		if (ph[i].type == 1 && (int)i != hash && ph[i].memsz) {
+			if (ph[i].flags & (1u << 27))
+				reloc = 1;
+			if (ph[i].paddr < lo)
+				lo = ph[i].paddr;
+		}
+	uint64_t mreloc = reloc ? lo : MPSS_PA, boot_addr = reloc ? MPSS_PA : lo;
+	uint32_t total = 0;
+	static uint8_t zeros[0x10000];
+	for (uint32_t i = 0; i < phnum; i++) {
+		if (ph[i].type != 1 || (int)i == hash || !ph[i].memsz)
+			continue;
+		uint64_t off = ph[i].paddr - mreloc;
+		if (ph[i].paddr < mreloc || off + ph[i].memsz > MPSS_SIZE || ph[i].filesz > ph[i].memsz) {
+			fprintf(stderr, "mba: segment %u does not fit the region\n", i);
+			mss_fail_cleanup();
+			return -1;
+		}
+		if (ph[i].filesz) {
+			char path[128];
+			size_t sl;
+			snprintf(path, sizeof(path), FW_DIR "/modem.b%02u", i);
+			uint8_t *seg = slurp(path, &sl);
+			if (!seg || sl != ph[i].filesz) {
+				fprintf(stderr, "mba: %s missing or wrong size\n", path);
+				free(seg);
+				mss_fail_cleanup();
+				return -1;
+			}
+			pm_wr(MPSS_PA + off, seg, (ph[i].filesz + 3) & ~3u);
+			free(seg);
+		}
+		for (uint64_t o = (ph[i].filesz + 3) & ~3ull; o < ph[i].memsz; o += sizeof(zeros)) {
+			uint64_t n = ph[i].memsz - o < sizeof(zeros) ? ph[i].memsz - o : sizeof(zeros);
+			pm_wr(MPSS_PA + off + o, zeros, (n + 3) & ~3ull);
+		}
+		total += ph[i].memsz;
+		if (!rd32(MSS_RMB + RMB_PMI_LENGTH)) {
+			wr32(MSS_RMB + RMB_PMI_START, (uint32_t)boot_addr);
+			wr32(MSS_RMB + RMB_MBA_COMMAND, 2);	/* LOAD_READY */
+		}
+		wr32(MSS_RMB + RMB_PMI_LENGTH, total);
+		st = (int32_t)rd32(MSS_RMB + RMB_MBA_STATUS);
+		if (st < 0) {
+			printf("mba: MPSS authentication failed at segment %u: %d\n", i, st);
+			mss_fail_cleanup();
+			return -1;
+		}
+	}
+	free(mdt);
+	printf("mba: %u bytes of segments loaded (relocatable %d, start %llx)\n", total, reloc,
+	       (unsigned long long)boot_addr);
+	if (mss_assign(&mpss_perm, 0, 1, MPSS_PA, MPSS_SIZE)) {
+		mss_fail_cleanup();
+		return -1;
+	}
+	st = rmb_wait(RMB_MBA_STATUS, 4, 10000);
+	printf("mba: MPSS authentication -> status %d (4 = complete)\n", st);
+	if (st != 4) {
+		mss_fail_cleanup();
+		return -1;
+	}
+
+	/* qcom_q6v5_wait_for_start: SMP2P "ready" (bit 1) from the modem; then reclaim the MBA region */
+	uint64_t ve;
+	if (smp2p_in_entry("slave-kernel", &ve) == 0)
+		wr32(ve, 0);
+	modem_state = 0xffffffff;
+	for (int t = 0; t < 300; t++) {
+		uint32_t v;
+		smp2p_service();
+		if (smp2p_in_value("slave-kernel", &v) == 0 && (v & 2) && !(v & 1)) {
+			printf("mba: modem ready after %d00 ms\n", t);
+			mss_assign(&mba_perm, 1, 0, MBA_PA, MBA_SIZE);
+			return 0;
+		}
+		usleep(100000);
+	}
+	printf("mba: no ready from the modem in 30 s\n");
+	smp2p_show("in", 435);
+	return -1;
+}
+
 static void net_cb(const struct qrtr_hdr *h, const uint8_t *d, uint32_t n)
 {
 	uint32_t w[5] = { 0 };
@@ -821,6 +1195,8 @@ int main(int argc, char **argv)
 		cmddb_list();
 	} else if (!strcmp(c, "wlan-power")) {
 		return wlan_power() ? 1 : 0;
+	} else if (!strcmp(c, "boot-mba")) {
+		return boot_modem_mba() ? 1 : 0;
 	} else if (!strcmp(c, "boot")) {
 		if (argc > 2)
 			boot_meta_pa = strtoull(argv[2], NULL, 0);

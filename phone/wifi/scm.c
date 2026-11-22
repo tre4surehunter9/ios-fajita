@@ -5,8 +5,10 @@
 
 int hyp_assign(uint64_t pa, uint64_t size, const uint32_t *src, int nsrc, const uint32_t *dst, int ndst)
 {
-	uint64_t t = pm_alloc(4096, 4096);
-	if (!t || nsrc > 8 || ndst > 8)
+	/* fajita: XNU's memory (pm_alloc) is all above 4 GiB; the SCM parameters go into a fixed page of free low
+	 * DRAM instead (next to wland's MBA metadata at 0xE1000000; radio.c's pool ends there). */
+	const uint64_t t = 0xE1010000ull;
+	if (nsrc > 8 || ndst > 8)
 		return -1;
 	uint64_t mem[2] = { pa, size };
 	struct { uint32_t vm, perm; uint64_t ctx; uint32_t ctx_size, pad; } d[8] = { { 0 } };
@@ -23,7 +25,6 @@ int hyp_assign(uint64_t pa, uint64_t size, const uint32_t *src, int nsrc, const 
 	uint64_t x[8] = { 0x42000000ull | (0xcu << 8) | 0x16, 7 | (1u << 4) | (1u << 8) | (1u << 12),
 			  t, sizeof(mem), t + 64, t + 512, 0, 0 };
 	pm_smc(x);
-	pm_free(t);
 	printf("scm: hyp_assign %llx+%llx to %d vm(s) -> %lld\n", (unsigned long long)pa, (unsigned long long)size, ndst,
 	       (long long)x[0]);
 	return x[0] ? -1 : 0;
