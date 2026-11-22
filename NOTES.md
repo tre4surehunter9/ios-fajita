@@ -122,6 +122,12 @@ table at the top). State:
     workflow. Firmware in research/fw-fajita (SHA256SUMS); `tools/mbn-split.py` makes wland's modem.mdt + modem.bNN
     from modem.mbn: 30 segments, hash = 1, loadable paddr 0x8e000000..0x95800000 = exactly mpss_region. Not run yet.
     First phone steps (read-only): `wland smem`, `wland smp2p`; then `wland boot` = PAS (SCM) attempt (ask the user).
+  - **wland on the phone (0133c, 2026-11-21; wland at /var/local/bin/wland, phone-bin run 44987785920):** read-only
+    steps work. `wland smem`: 6 partitions, global 5; hosts 0-1 (apps-modem) at 0x860b9000 size 0x7c000, empty
+    (free unc 0x20: never used); item 137 in the global heap. `wland smp2p`: items 435 and 428 absent (modem never
+    booted; wland allocates 428 before the boot). TCSR mutex 0x1f40000 is SDM845's too. Next: `wland boot` (power
+    votes, QMP, SMP2P item, PAS init_image/mem_setup/auth_and_reset over SCM), on the user's yes; a refused PAS
+    means porting the MBA path. A hung SMC wedges a CPU: recover with a forced reboot.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
