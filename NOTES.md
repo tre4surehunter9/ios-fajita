@@ -161,6 +161,12 @@ table at the top). State:
     open for write -> EROFS). ufs_write_blocks now also refuses any LUN but the root's. Plan: read each with the
     file server (`sweet-phone.py read /dev/ufs_X 0 SIZE backup/X.img`, sizes from the `SWEET UFS: X on LUN` lines),
     keep them in backup/ (gitignored, per phone), PUT copies to /var/local/fw/rmtfs/{modemst1,modemst2,fsg,fsc}.img.
+  - **0134p on the phone (2026-11-22, kernel run 44990395386): the modem partitions are copied.** All four on **LUN 5**:
+    modemst1 block 0x20, modemst2 0x220, fsg 0x420 (2 MiB each), fsc 0x620 (128 KiB). Read twice, identical: modemst1/2
+    full of data (EFS header), **fsg and fsc all zeros** (their real content). Kept on the PC in
+    backup/fajita-rmtfs-20261122/ (gitignored, SHA256SUMS, mode 600); copies on the phone in /var/local/fw/rmtfs/*.img
+    (600), modemst1 verified by GET. wland with `up` on MBA: phone-bin run 44990649992 (not yet on the phone).
+    Battery: gauge 22 % (465/2115 mAh, 3745 mV) after the user's charge; fastboot had shown 3756 mV, soc-ok yes.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
