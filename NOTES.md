@@ -83,6 +83,19 @@ table at the top). State:
   - **2026-11-21: daily image 0131d flashed to boot_a** (user's request): kernel 0131 (xnu run 44983368052), 0128g's
     boot-args + `sweetbattery=1` (`sweetusb=1`, no live log), sha256 `56ae7963…`. Phone left in fastboot after the
     flash (not booted). Rebuild: same recipe as 0128g with xnu/out-0131.
+  - **Wi-Fi (user chose it over SSH, 2026-11-21), step 0: a file channel.** Reference: ios-flame (Pixel 4, same WCN3990,
+    MIT) has Wi-Fi in Settings (`phone/wifi` wland in userland + kernel 0094 /dev/pmem, 0102 RPMh, 0123 en0 for wifid).
+    Our differences: SDM845 boots the modem through `qcom,sdm845-mss-pil` (MBA, q6v5_mss.c), not PAS; rails per
+    fajita DT (l5a, l7a, l17a, l25a, l23a). Firmware is public (gitlab sdm845-mainline/firmware-oneplus-sdm845 @176ca71:
+    mba.mbn, modem.mbn 60 MB, wlanmdsp.mbn, modemr/modemuw.jsn, postmarketos/ath10k/WCN3990/hw1.0/board-2.bin); the
+    per-phone modemst1/2, fsg, fsc (rmtfs) must be read from this phone (never git). 60 MB does not fit a boot image,
+    hence the file channel first.
+    **Kernel patch 0132 (written, not built):** ios-flame's in-kernel file server (0091 + 0094 READ) on
+    192.168.7.2:2223 only (theirs: any interface), with sweetusb=2; `sweetfiles=0` off. **phone/sweetcmd:** runs a
+    program from the PC on 192.168.7.2:2224, streams output, trailer `@@SWEETCMD EXIT n`; rides in the payload via
+    sweetrun (`--run sweetcmd`). PC side: `tools/sweet-phone.py put/get/read/mkdir/rm/chmod/ln/run`.
+    Next: CI (xnu + phone), image `0132c` = 0131b boot-args (sweetusb=2) + `--run sweetcmd`, `fastboot boot` on the
+    user's yes, then put/get/run tests.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
