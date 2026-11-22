@@ -45,8 +45,8 @@ table at the top). State:
     firmware-oneplus-sdm845 @176ca71); boot-args = README §4 + `sweetgpu=3 sweetmtl=2`. **DTBs:** the
     Sailfish dump was lost with the old machine (the ~/Documents/backups* boot_a images are the Essential
     phone's), so the user chose the DTBs appended to LineageOS 22.2 fajita 20261117 boot.img
-    (`dtb/fajita/lineage-20261117/`): the same three generic SDM845 v1/v2/v2.1 DTBs, board-id 0. Untested
-    so far. The user said the phone currently boots "without GPU" (image on boot_a unknown, no copy here).
+    (`dtb/fajita/lineage-20261117/`): the same three generic SDM845 v1/v2/v2.1 DTBs, board-id 0; ABL takes them.
+    The user said the phone currently boots "without GPU" (image on boot_a unknown, no copy here).
     Root is assumed to still hold SweetMetal2.bundle (chlinstall only adds Chlorophyll.bundle).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
