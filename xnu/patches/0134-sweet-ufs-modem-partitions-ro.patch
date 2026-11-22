@@ -1,0 +1,216 @@
+diff --git a/bsd/dev/sweet_ufs.c b/bsd/dev/sweet_ufs.c
+index f1055a5..aee5b8d 100644
+--- a/bsd/dev/sweet_ufs.c
++++ b/bsd/dev/sweet_ufs.c
+@@ -17,6 +17,11 @@
+  * Writes are refused unless boot-arg ufsrw=1 is set. Every write is checked
+  * against the partition bounds again right before it is issued, so nothing
+  * outside the named partition can be written.
++ *
++ * fajita, boot-arg sweetufsparts=1: the modem's own partitions (modemst1,
++ * modemst2, fsg, fsc: rmtfs, phone/wifi) are looked up on LUNs 0-7 and shown
++ * READ-ONLY as /dev/ufs_<name> (root 0400), so they can be copied off the
++ * phone once. No write path exists for them; writes stay on the root LUN.
+  */
+ #if defined(ARM64_BOARD_CONFIG_SWEET)
+ #include <sys/param.h>
+@@ -105,7 +110,8 @@ static struct {
+ 	vm_offset_t regs;
+ 	vm_offset_t dma;                        /* kernel VA of the DMA allocation */
+ 	uint64_t dma_pa;
+-	uint8_t lun;
++	uint8_t lun;                            /* LUN of the next command */
++	uint8_t root_lun;                       /* the root partition's LUN: the only one written */
+ 	uint8_t tag;
+ 	uint64_t first_block, nblocks;          /* partition, in 4 KiB device blocks */
+ 	uint32_t secsize;                       /* logical sector size for the BSD layer */
+@@ -281,7 +287,7 @@ ufs_read_blocks(uint64_t lba, uint32_t count)
+ static int
+ ufs_write_blocks(uint64_t lba, uint32_t count)
+ {
+-	if (!su.writable || !su.nblocks || count == 0 || count > BOUNCE_SIZE / UFS_BLOCK ||
++	if (!su.writable || !su.nblocks || su.lun != su.root_lun || count == 0 || count > BOUNCE_SIZE / UFS_BLOCK ||
+ 	    lba < su.first_block || lba - su.first_block >= su.nblocks ||
+ 	    count > su.nblocks - (lba - su.first_block) || lba + count - 1 > UINT32_MAX) {
+ 		printf("SWEET UFS: refusing write of %u blocks at 0x%llx\n", count, lba);
+@@ -302,8 +308,17 @@ ufs_sync_cache(void)
+ 	return ufs_scsi(cdb, sizeof(cdb), 0, false);
+ }
+ 
++static int ufs_gpt_find(const char *want, uint64_t *first_out, uint64_t *n_out, bool quiet);
++
+ static int
+ ufs_find_partition(const char *want)
++{
++	return ufs_gpt_find(want, &su.first_block, &su.nblocks, false);
++}
++
++/* The GPT of LUN su.lun (caller holds the lock): partition want's first block and size, in 4 KiB blocks. */
++static int
++ufs_gpt_find(const char *want, uint64_t *first_out, uint64_t *n_out, bool quiet)
+ {
+ 	const uint8_t *b = (const uint8_t *)(su.dma + DMA_BOUNCE);
+ 	int error = ufs_read_blocks(1, 1);
+@@ -311,7 +326,9 @@ ufs_find_partition(const char *want)
+ 		return error;
+ 	}
+ 	if (memcmp(b, "EFI PART", 8) != 0) {
+-		printf("SWEET UFS: LUN %u has no GPT\n", su.lun);
++		if (!quiet) {
++			printf("SWEET UFS: LUN %u has no GPT\n", su.lun);
++		}
+ 		return ENXIO;
+ 	}
+ 	uint64_t entry_lba;
+@@ -348,11 +365,13 @@ ufs_find_partition(const char *want)
+ 		if (last < first) {
+ 			return ENXIO;
+ 		}
+-		su.first_block = first;
+-		su.nblocks = last - first + 1;
++		*first_out = first;
++		*n_out = last - first + 1;
+ 		return 0;
+ 	}
+-	printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
++	if (!quiet) {
++		printf("SWEET UFS: no GPT partition named \"%s\"\n", want);
++	}
+ 	return ENOENT;
+ }
+ 
+@@ -586,6 +605,117 @@ static const struct cdevsw sweet_ufs_cdevsw = {
+ 	.d_type       = D_DISK,
+ };
+ 
++/* ---- fajita: read-only modem partitions (boot-arg sweetufsparts=1) ---- */
++static struct {
++	const char *name;
++	uint8_t lun;
++	bool found;
++	uint64_t first, n;
++} su_part[] = { { "modemst1" }, { "modemst2" }, { "fsg" }, { "fsc" } };
++#define SU_NPART        (sizeof(su_part) / sizeof(su_part[0]))
++
++static int
++sweet_ufs_part_open(dev_t dev, int flags, __unused int devtype, __unused struct proc *p)
++{
++	unsigned m = (unsigned)minor(dev);
++	if (m >= SU_NPART || !su_part[m].found) {
++		return ENXIO;
++	}
++	return (flags & FWRITE) ? EROFS : 0;
++}
++
++static int
++sweet_ufs_part_close(__unused dev_t dev, __unused int flags, __unused int devtype, __unused struct proc *p)
++{
++	return 0;
++}
++
++static int
++sweet_ufs_part_read(dev_t dev, struct uio *uio, __unused int ioflag)
++{
++	unsigned m = (unsigned)minor(dev);
++	if (m >= SU_NPART || !su_part[m].found || uio_offset(uio) < 0) {
++		return ENXIO;
++	}
++	uint64_t bytes = su_part[m].n * UFS_BLOCK;
++	int error = 0;
++	while (!error && uio_resid(uio) > 0 && (uint64_t)uio_offset(uio) < bytes) {
++		uint64_t pos = (uint64_t)uio_offset(uio);
++		uint32_t skip = (uint32_t)(pos % UFS_BLOCK);
++		uint64_t n = MIN((uint64_t)uio_resid(uio), MIN((uint64_t)(BOUNCE_SIZE - skip), bytes - pos));
++		uint32_t blocks = (uint32_t)((skip + n + UFS_BLOCK - 1) / UFS_BLOCK);
++		lck_mtx_lock(&sweet_ufs_lock);
++		su.lun = su_part[m].lun;
++		error = ufs_read_blocks(su_part[m].first + pos / UFS_BLOCK, blocks);
++		su.lun = su.root_lun;
++		if (!error) {
++			error = uiomove((const char *)(su.dma + DMA_BOUNCE) + skip, (int)n, uio);
++		}
++		lck_mtx_unlock(&sweet_ufs_lock);
++	}
++	return error;
++}
++
++static const struct cdevsw sweet_ufs_part_cdevsw = {
++	.d_open       = sweet_ufs_part_open,
++	.d_close      = sweet_ufs_part_close,
++	.d_read       = sweet_ufs_part_read,
++	.d_write      = eno_rdwrt,
++	.d_ioctl      = eno_ioctl,
++	.d_stop       = eno_stop,
++	.d_reset      = eno_reset,
++	.d_ttys       = NULL,
++	.d_select     = eno_select,
++	.d_mmap       = eno_mmap,
++	.d_strategy   = eno_strat,
++	.d_reserved_1 = eno_getc,
++	.d_reserved_2 = eno_putc,
++	.d_type       = 0,
++};
++
++static void
++sweet_ufs_parts_init(void)
++{
++	uint32_t on = 0;
++	PE_parse_boot_argn("sweetufsparts", &on, sizeof(on));
++	if (on != 1) {
++		return;
++	}
++	static const uint8_t tur[6] = { 0x00 };
++	unsigned found = 0;
++	lck_mtx_lock(&sweet_ufs_lock);
++	for (uint8_t lun = 0; lun < 8 && found < SU_NPART; lun++) {
++		su.lun = lun;
++		int error = EIO;
++		for (int i = 0; i < 3 && (error = ufs_scsi(tur, sizeof(tur), 0, false)); i++) {
++		}
++		for (unsigned i = 0; !error && i < SU_NPART; i++) {
++			if (!su_part[i].found &&
++			    ufs_gpt_find(su_part[i].name, &su_part[i].first, &su_part[i].n, true) == 0) {
++				su_part[i].lun = lun;
++				su_part[i].found = true;
++				found++;
++			}
++		}
++	}
++	su.lun = su.root_lun;
++	lck_mtx_unlock(&sweet_ufs_lock);
++	int major = found ? cdevsw_add(-1, &sweet_ufs_part_cdevsw) : -1;
++	for (unsigned i = 0; i < SU_NPART; i++) {
++		if (!su_part[i].found) {
++			printf("SWEET UFS: partition %s not found\n", su_part[i].name);
++			continue;
++		}
++		printf("SWEET UFS: %s on LUN %u: first block 0x%llx, %llu bytes, read-only /dev/ufs_%s\n",
++		    su_part[i].name, su_part[i].lun, su_part[i].first, su_part[i].n * UFS_BLOCK, su_part[i].name);
++		if (major >= 0) {
++			char node[24];
++			snprintf(node, sizeof(node), "ufs_%s", su_part[i].name);
++			devfs_make_node(makedev(major, i), DEVFS_CHAR, UID_ROOT, GID_WHEEL, 0400, "%s", node);
++		}
++	}
++}
++
+ static int
+ sweet_ufs_init(void)
+ {
+@@ -621,7 +751,7 @@ sweet_ufs_init(void)
+ 		return ENOMEM;
+ 	}
+ 	su.dma_pa = ptoa_64(pn);
+-	su.lun = 0;
++	su.lun = su.root_lun = 0;
+ 	su.secsize = DEV_BSIZE;
+ 
+ 	lck_mtx_lock(&sweet_ufs_lock);
+@@ -657,6 +787,7 @@ sweet_ufs_init(void)
+ 	printf("SWEET UFS: \"%s\" on LUN %u: first block 0x%llx, %llu MiB, %s, DMA at 0x%llx\n",
+ 	    want, su.lun, su.first_block, su.nblocks * UFS_BLOCK >> 20,
+ 	    su.writable ? "read-write" : "read-only", su.dma_pa);
++	sweet_ufs_parts_init();   /* fajita modem partitions, read-only (sweetufsparts=1) */
+ 	sweet_log_start();
+ 	sweet_sample_start();
+ 	/* Input drivers (HID services in iokit/Kernel/arm/hid/SweetHID.cpp). */

@@ -155,6 +155,12 @@ table at the top). State:
     **Next:** rmtfs needs this phone's modemst1, modemst2, fsg, fsc: a read-only way to read them (kernel UFS driver
     only exposes userdata today); then `wland up`'s later layers (GLINK, QRTR, rmtfs, pd-mapper, TFTP wlanmdsp, WLFW).
     Charge the phone first (it drains ~1 A even on the PC port).
+  - **Kernel patch 0134 (written 2026-11-21, not built): read-only modem partitions.** Boot-arg `sweetufsparts=1`
+    (default off): sweet_ufs.c looks up modemst1, modemst2, fsg, fsc in the GPTs of LUNs 0-7 (TEST UNIT READY first,
+    LUN switched and restored inside sweet_ufs_lock) and makes /dev/ufs_<name> (root 0400, read only: no write path;
+    open for write -> EROFS). ufs_write_blocks now also refuses any LUN but the root's. Plan: read each with the
+    file server (`sweet-phone.py read /dev/ufs_X 0 SIZE backup/X.img`, sizes from the `SWEET UFS: X on LUN` lines),
+    keep them in backup/ (gitignored, per phone), PUT copies to /var/local/fw/rmtfs/{modemst1,modemst2,fsg,fsc}.img.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
