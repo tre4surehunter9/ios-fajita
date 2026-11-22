@@ -300,8 +300,10 @@ table at the top). State:
     logs/wland-up-7.txt, usb-0138w-2.txt). From the boot: wifid starts (wlan ADT), configd's Wi-Fi service for en0
     **persisted across the reboot** (no configd restart needed), wland joins TVIFiber_6259 (-53 dBm), configd's
     DHCP 192.168.1.53 + default route, PC ping ok. The first background scan came at 85 s (60 s hold-off) and the
-    link survived it (17 networks for wifid); no kickout or modem assert by 111 s. Still open: the user has not
-    entered the password in Settings (Settings already showed "connected"); the 0136d daily image + wlandjob boot
+    link survived it (17 networks for wifid); no kickout or modem assert by 111 s. **The join came from wland's
+    /var/local/wlan.conf, not wifid** (user): Settings shows "connected" because the kernel answers wifid's
+    CURRENT_NETWORK; wifid never sent ASSOCIATE and stores nothing. Untested: a join chosen in Settings (needs a
+    network wlan.conf does not name, or no wlan.conf). Still open: the 0136d daily image + wlandjob boot
     job; whether the teardown fix holds on a real kickout; battery ~2 % at the end.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
