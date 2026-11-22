@@ -114,6 +114,14 @@ table at the top). State:
     Next: copy ios-flame phone/wifi in (MIT) with the SDM845 changes (APCS IPC 0x1799000c, MSA 0x8df00000, rmtfs
     0xf5b01000, rails l5a/l7a/l17a/l25a/l23a, board-2.bin); try their PAS modem boot first, MBA (q6v5_mss) if TZ
     refuses; then firmware over the file channel and the per-phone rmtfs partitions (ask the user).
+  - **phone/wifi (2026-11-21): ios-flame's wland copied in (MIT) with the SDM845 changes** (table in phone/wifi/README.md;
+    each marked `SDM845:`): APCS IPC 0x1799000c (bits 14/12/0 and SMEM items 435/428 already match), rails ldoa5 800,
+    ldoa7 1800, ldoa17 1304, ldoa25/ldoa23 3312, QDSS-over-QMP non-fatal, modem region 0x8e000000+0x7800000, MSA
+    0x8df00000, rmtfs fixed 0xf5b01000, SMMU stream 0x0040, board data picked from board-2.bin by the reported board id
+    (wlfw.c; tools/ath10k-bdf.py lists 30 boards `bus=snoc,qmi-board-id=N`, no chip-id names). Built by the phone
+    workflow. Firmware in research/fw-fajita (SHA256SUMS); `tools/mbn-split.py` makes wland's modem.mdt + modem.bNN
+    from modem.mbn: 30 segments, hash = 1, loadable paddr 0x8e000000..0x95800000 = exactly mpss_region. Not run yet.
+    First phone steps (read-only): `wland smem`, `wland smp2p`; then `wland boot` = PAS (SCM) attempt (ask the user).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
