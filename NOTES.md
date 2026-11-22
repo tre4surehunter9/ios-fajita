@@ -71,6 +71,13 @@ table at the top). State:
   - **Kernel patch 0131:** sweet_spmi reads PMI8998 (USID 2) CHGR/USBIN/MISC on fajita only; SweetBattery takes
     external/charging/full from POWER_PATH_STATUS 0x160b and BATTERY_CHARGER_STATUS_1/2 0x1006/0x1007 (mainline
     qcom_pmi8998_charger.c); logs a `SWEET FG` line on every change. Gauge heuristic stays as fallback.
+  - **0131 on the phone (image 0131b, `fastboot boot`, 2026-11-21): charging indicator works (user), shows up "a bit
+    delayed" (first read 90 s after boot, then every 30 s; user: later).** Log: `soc=50% 3591 mV -837 mA ...
+    chg=1 path=0x13 st=0x42/0 -> external=1 charging=1`: USB power in use, charger in FAST_CHARGE, yet the battery
+    loses charge (-837 mA; 54 % -> 50 % across the two boots) on the PC's USB port: nobody raises the input current
+    limit. So the gauge does measure current; 0130b's 0 mA was most likely its first average. boot_a still 0128g.
+    Open: faster plug/unplug updates, input current limit / charger setup (writes, ask the user first), warn and
+    critical levels, then SSH over USB.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
