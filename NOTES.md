@@ -134,6 +134,10 @@ table at the top). State:
     loaded. Guesses (unproven): SDM845 TZ has no modem PAS (mainline/downstream boot it via MBA), or the metadata
     above 4 GiB (all XNU memory is in the upper bank here). Cheap check: metadata in free low DRAM (e.g. the
     0xE0000000 pool region); otherwise port q6v5_mss's MBA boot. Logs: logs/wland-boot-1.txt.
+  - **wland boot #2 (`wland boot 0xE1000000`, metadata in low DRAM):** same 0xffcfffbb. Not the address: **SDM845's
+    TZ does not PAS-boot the modem.** Next: port the MBA boot from mainline qcom_q6v5_mss.c (sdm845-mss-pil: qdsp6
+    0x04080000, rmb 0x04180000, halt regs in tcsr_regs_1 0x3000/0x5000/0x4000, AOSS MSS restart + PDC reset, GCC MSS
+    clocks, mba.mbn into mba_region 0x96500000, then the RMB handshake that loads modem.mdt/bNN). Logs: wland-boot-2.txt.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
