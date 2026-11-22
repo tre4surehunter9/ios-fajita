@@ -45,6 +45,7 @@ jobs:
           $CC -fobjc-arc -o out/netsvc phone/netsvc/netsvc.m -framework Foundation -framework SystemConfiguration
           $CC -fobjc-arc -o out/nettest phone/netsvc/nettest.m -framework Foundation
           $CC -o out/wlandjob phone/wlandjob/wlandjob.c -framework CoreFoundation
+          $CC -o out/pkill phone/pkill/pkill.c
           $CC -x c++ -std=c++17 -I phone/include -o out/gputest phone/gputest/gputest.cpp \
               -framework IOKit -framework CoreFoundation -lc++
           for f in out/*; do codesign -f -s - "$f"; done
