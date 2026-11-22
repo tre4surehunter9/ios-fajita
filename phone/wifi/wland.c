@@ -1076,7 +1076,8 @@ static int up(unsigned secs)
 {
 	if (smmu_wlan_identity())
 		printf("up: no WLAN SMMU stream: the radio will not start\n");
-	if (wlan_power() || smp2p_create() || boot_modem())
+	/* fajita: SDM845's TZ refuses PAS for the modem (0xffcfffbb): MBA, as mainline (boot_modem_mba) */
+	if (wlan_power() || smp2p_create() || boot_modem_mba())
 		return 1;
 	return net(secs) ? 1 : 0;
 }
