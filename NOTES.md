@@ -30,11 +30,13 @@ table at the top). State:
     41964641563 and phone run 41964641635 succeeded; kernel with 0129 = xnu run 41961528772 (98f4d04)
     succeeded (41960285782 failed packaging while bearssl.org was down; fixed by 98f4d04/9a8492f).
     **Not known whether the e889fe6 build was ever run on the phone.**
-  - **Next:** ask the user which image is on boot_a and whether the phone still has the mtlnative bundle.
-    Then boot `sweetmtl=3` with the e889fe6 artifacts, capture the USB log, and match the fault address to a
-    BO. The fallback is `sweetmtl=2` (the 21-24 fps SweetMetal2 path). After that, in the user's order:
-    battery gauge, SSH over USB, Wi-Fi, IPAs; 8 GiB RAM still open.
-  - Branch note: `main` stops at 955cde8 (2026-10-31); all later work is only on `fajita`.
+  - **mtlnative is PARKED (2026-11-21, user):** the daily path is `sweetmtl=2` (SweetMetal2). Everything native
+    is behind `sweetmtl=3` (0129) and its own workflow (fajita pushes to phone/mtlnative only). The phone's
+    root may still hold an unused /System/Library/Extensions/Chlorophyll.bundle (Metal loads only the bundle
+    the kernel names). To resume: boot `sweetmtl=3` with the e889fe6 artifacts, capture the USB log, match
+    the fault address to a BO.
+  - **Next (user's order):** battery follow-ups (see below), SSH over USB, Wi-Fi, IPAs; 8 GiB RAM still open.
+  - Branch note: `main` was fast-forwarded to `fajita` on 2026-11-21; both carry the same history.
   - **Rebuilt on this machine (2026-11-21, user: "the last image before mtlnative"):**
     `shim/out-fajita/shim-boot-0128g.img` (sha256 `f5780bde…7be6e`). **Booted 2026-11-21 via `fastboot boot`
     (ABL accepted it, no Load Error): home screen, scrolling "smooth as it was" (user), so the GPU path and the

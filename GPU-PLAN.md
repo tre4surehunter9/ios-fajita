@@ -42,6 +42,17 @@ on the phone.
 Booting: `fastboot boot` sometimes fails with "Load Error" (even known-good images, even after a cold start).
 Flash the image to boot_a, then `fastboot continue`. The USB log only comes up when started from fastboot.
 
+## Parked (2026-11-21, user): the native Metal route (`sweetmtl=3`)
+
+Written 2026-11-02..04, then set aside; the daily path stays SweetMetal2 (`sweetmtl=2`). Chlorophyll.bundle as
+backboardd's Metal device: Mesa 25.0.7 freedreno (msm backend, Bergamota's patch) over a libdrm stand-in on
+SweetGPU's NativeAdreno interface (`phone/mtlnative/sweet_native_drm.c`), Chlorophyll's AIR translator with real
+function constants (`bg_specialize.m`); QuartzCore's iOS 16 ubershader compiles on the PC (95/95 fragment, 139/141
+overall). Kernel 0129 names the bundle only under `sweetmtl=3`; `chlinstall` puts it on the root for backboardd
+only. Last phone result (e889fe6's message, no log kept): backboardd's GPU slow from the first frame, then a GPU
+fault inside its window; e889fe6 logs every BO, submit and slow fence wait to name the faulting buffer, and was
+never booted. Resume there.
+
 ## Sources and how each may be used
 
 | Source | Licence | Use |
