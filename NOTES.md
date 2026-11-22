@@ -253,6 +253,11 @@ table at the top). State:
     left, charging enable, charger watchdog. **0138 (next): SPMI writes** through the v5 "chnls" channel
     (0x0c600000 + 0x10000 * APID; EXT_WRITEL opcode 0, WDATA0 +0x10, CMD +0, STATUS +8), only for APIDs owned by EE 0
     and an allowlist of charger registers, to set the ICL from the APSD type as mainline does.
+    **Kernel patch 0138 (written 2026-11-22, not built):** sweet_spmi_write (allowlist: USID 2, 0x1370 and 0x1341
+    only; APID owned by EE 0; channel mapped once) and SweetBattery::chargerSetup with boot-arg `sweetcharge=1`
+    (default off): APSD done -> 0x1370 = 1.5 A for CDP/DCP/OCP/float, 500 mA for SDP; APSD not done -> rerun (max 3).
+    Mainline's fast-charge cap and init sequence are not touched. Test: 0137 report first (plug type + ICL), then
+    sweetcharge=1 and watch ICL_STATUS and the gauge's current.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
