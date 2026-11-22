@@ -200,6 +200,14 @@ table at the top). State:
     registered for indications (fw status 0). Then **HOST_CAP (0x34) -> result 1 error 1 (malformed)**: fajita's DT
     has qcom,snoc-host-cap-8bit-quirk. **Fix:** daemon_support as one byte (mainline
     wlfw_host_cap_8bit_req_msg_v01_ei); wland phone-bin run 45040361613. The modem kept running.
+  - **2026-11-22: WI-FI SCANS WORK** (`wland up 300` #3, 0135p + wland run 45040361613; logs/wland-up-3.txt, gitignored:
+    it names the neighbours' networks). HOST_CAP 8-bit accepted; MSA 0x8df00000+0x4000 secure + 0x8df04000+0xfc000;
+    MSA READY; **chip 0x30214, family 0x4001, board 0, soc 0x40030001, fw 0x20050032 "WLAN.HL.2.0.c8-00050"**; BDF =
+    board-2.bin "bus=snoc,qmi-board-id=0" (19152 bytes, 4 segments); MAC + cal report -> 0; FW READY; mission mode;
+    CE host memory 0xe0000000..0xe00a5000, 12 rings; HTC READY (ce2); WMI READY (rf chains 2); HTT 3.56; channel list
+    (37), vdev, passive scans: **3 scans, 17 networks, 61 frames**, 2.4 and 5 GHz, -50..-88 dBm. tx/rx 0 (listen only).
+    Cosmetic: the printed channel of some BSSs looks wrong (a "5G" SSID on ch 1, a "2.4" on ch 36). Next: the join
+    (WPA2-PSK; wland reads ssid=/psk= from a file on the phone, never in git), DHCP, then Settings (kernel en0, flame 0123).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
