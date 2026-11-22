@@ -208,6 +208,15 @@ table at the top). State:
     (37), vdev, passive scans: **3 scans, 17 networks, 61 frames**, 2.4 and 5 GHz, -50..-88 dBm. tx/rx 0 (listen only).
     Cosmetic: the printed channel of some BSSs looks wrong (a "5G" SSID on ch 1, a "2.4" on ch 36). Next: the join
     (WPA2-PSK; wland reads ssid=/psk= from a file on the phone, never in git), DHCP, then Settings (kernel en0, flame 0123).
+  - **2026-11-22: WI-FI INTERNET WORKS** (`wland up 300` #4, 0135p; logs/wland-up-4.txt, gitignored). Network from
+    /var/local/wlan.conf on the phone (mode 600; the user's own network, never in git). Joined at 2437 MHz -53 dBm:
+    auth 0, assoc 0 (aid 34), **WPA2 4-way handshake, keys installed**; ipnet on wland's own utun3 (no /dev/wlan:
+    kernel 0123 not ported); **DHCP ACK 192.168.1.53/24**, lease 86400 s. PC ping got no reply until **phone/netsvc**
+    (ios-flame netsvc.m + nettest.m, SCDynamicStore-write entitlement, phone-bin run 45042275684; at
+    /var/local/bin/netsvc, which ipnet now spawns itself) published utun3 to configd: primary interface, default route,
+    DNS. Then **ping 4/4 ~7 ms**, and `nettest`: DNS apple.com (first lookup 10 s), TCP :80 19 ms, **HTTPS 200** via
+    NSURLSession (478 ms). The live wland -> PC output stalled mid-line after ~30 s although wland kept running (relay
+    issue, not investigated). Next: wland as a boot job (`wland auto`, launchd), then Settings -> Wi-Fi (flame 0123 en0).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
