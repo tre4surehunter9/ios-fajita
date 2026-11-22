@@ -225,6 +225,14 @@ table at the top). State:
     /System/Library/xpc/launchd.plist the way phone/quiet edits it (backup launchd.plist.pre-wland once). radio.c: with
     no USB route (daily image, sweetusb=1) wland now sets up the last bank CB44 itself exactly as usb_smmu_route does.
     **Needs a daily image with kernel 0135** (boot_a still has 0131d): 0135d = 0131d's boot-args (sweetusb=1) on 0135.
+    0135d built: shim/out-fajita/shim-boot-0135d.img (sha256 720099d8...). Not booted, not flashed.
+  - **Kernel patch 0136 (written 2026-11-22, not built): Settings -> Wi-Fi**, ios-flame's 0123 (HackiOS APSL 2.0 via
+    ios-topaz): /dev/wlan (flame_wlan.c, wland's bridge.c talks to it), en0 + station (flame_sta.c, redwood_sta/net),
+    Apple80211 answered in the kernel for wifid (redwood_apple80211.c, RedwoodWLAN.cpp, MiniIONetworkStack.cpp), the
+    IOKit quiesce hold dropped (IOService/IOStartIOKit: configd's InterfaceNamer and wifid waited for it), AKS key
+    wrap/unwrap (SweetKeyStore: keychain items such as Wi-Fi passwords). Applied to our tree except the build lists
+    and sweet_ufs.c init (merged by hand) and **SweetSurface's 10-bit-format change left out** (display path; a test
+    of its own). `sweetwifid=0` drops /dev/wlan and en0 (wland then keeps its own utun).
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
