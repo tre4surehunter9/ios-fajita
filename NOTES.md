@@ -102,6 +102,12 @@ table at the top). State:
     "not supported"). iOS has no ls/uname/sysctl; present: /usr/sbin/ioreg, /usr/sbin/nvram, /usr/bin/footprint.
     At 0132c's ioreg: 879/2092 mAh, 3416 mV, external + charging Yes, amperage -1021 mA: still draining on the PC
     port. Cosmetic: LegacyBatteryInfo "Amperage" is the signed value cast to UInt32. boot_a still 0131d.
+  - **Kernel patch 0133 (written 2026-11-21, not built): /dev/pmem** = ios-flame's bsd/dev/sweet_pmem.c (0094 + 0102):
+    pread/pwrite at a PA (DRAM cache-maintained, else 32-bit device access), PMEM_ALLOC/FREE/LIST (contiguous),
+    PMEM_SMC (SCM with QCOM_SCM_INTERRUPTED resume), PMEM_RPMH (here 1-3 commands: our rh_send's limit). Our
+    sweet_rpmh.c already had flame's generic rh_send (GPU work), so only `sweet_rpmh_write` was added (".lvl" =
+    ARC, else VRM; no BCM). Root 0600, `sweetpmem=0` drops it. Test plan: file-server READ of /dev/pmem at SMEM
+    0x86000000 (reserved DRAM) from the PC.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
