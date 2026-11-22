@@ -167,6 +167,15 @@ table at the top). State:
     backup/fajita-rmtfs-20261122/ (gitignored, SHA256SUMS, mode 600); copies on the phone in /var/local/fw/rmtfs/*.img
     (600), modemst1 verified by GET. wland with `up` on MBA: phone-bin run 44990649992 (not yet on the phone).
     Battery: gauge 22 % (465/2115 mAh, 3745 mV) after the user's charge; fastboot had shown 3756 mV, soc-ok yes.
+  - **`wland up 180` #1 (0134p, 2026-11-22): the SoC reset into crash-dump mode (05c6:900e)** right after `exec wland`.
+    wland's stdout was block-buffered into sweetcmd's pipe, so no wland lines survived; the kernel log has no
+    `SWEET PMEM: rpmh` line, so it died before the first rail vote: in smmu_wlan_identity (first step of up), most
+    likely (not proven). ios-flame's routine picks the LOWEST free context bank and writes a stage-2 CBAR (0x1f000),
+    CBA2R, TCR, MAIR, sTLBGSYNC; on SDM845 the hypervisor owns stage 2 (Linux arm-smmu-qcom quirk). Our kernel's
+    USB routing (sweet_usb.c usb_smmu_route: last bank CB44, CBAR TYPE 1 = S1/S2-bypass, SCTLR 0, S2CR then SMR)
+    works. **Fix (radio.c):** WLAN now does exactly that on the highest free bank below USB's; wland line-buffers
+    stdout. SMMU on this boot: sCR0 0x2d0406 (USFCFG 1), 76 SMRs, 45 banks, 6 valid SMRs + USB's SMR6 -> CB44.
+    Next try: `wland smmu` alone first, then `wland up`.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16

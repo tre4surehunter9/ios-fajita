@@ -85,6 +85,14 @@ static int sid_match(uint32_t smr, uint32_t sid, uint32_t mask)
 	return ((id ^ sid) & ~(m | mask) & 0x7fff) == 0;
 }
 
+/*
+ * fajita (SDM845): exactly as the kernel's USB stream 0x740 (bsd/dev/sweet_usb.c usb_smmu_route), which works:
+ * Linux arm-smmu-qcom's SDM845 quirk. The hypervisor owns stage 2 here, so: a context bank near the top as
+ * stage 1 translate / stage 2 bypass (CBAR TYPE 1) with SCTLR.M = 0 (untranslated), then S2CR, then the SMR;
+ * no stage-2 state, CBA2R, TCR or TLB sync. ios-flame's version (lowest free bank, stage-2 CBAR 0x1f000, CBA2R,
+ * TCR, sTLBGSYNC) reset this SoC into crash-dump mode on its first `wland up` (2026-11-22).
+ * USB has the last bank (CB ncb-1); WLAN takes the highest free one below it.
+ */
 int smmu_wlan_identity(void)
 {
 	uint64_t s = SMMU_PA;
@@ -96,7 +104,11 @@ int smmu_wlan_identity(void)
 
 	printf("smmu: sCR0 %08x ID0 %08x ID1 %08x: %u SMRs, %u context banks, page %#x x %u\n", rd32(s), id0, id1, nsmr,
 	       ncb, psize, npage);
-	for (uint32_t i = 0; i < nsmr && i < 128; i++) {
+	if (nsmr == 0 || nsmr > 128 || ncb < 2 || ncb > 128 || (uint64_t)psize * npage * 2 > SMMU_SIZE) {
+		printf("smmu: geometry unexpected; not routing\n");
+		return -1;
+	}
+	for (uint32_t i = 0; i < nsmr; i++) {
 		uint32_t smr = rd32(s + 0x800 + 4 * i), s2cr = rd32(s + 0xc00 + 4 * i);
 		if (!(smr >> 31)) {
 			if (slot < 0)
@@ -114,39 +126,30 @@ int smmu_wlan_identity(void)
 			return smmu_done ? 0 : -1;
 		}
 	}
-	/* lowest free bank that nothing points at and nobody set up (the top ones may be secure) */
-	for (uint32_t c = 0; c < ncb && c < 256; c++) {
+	for (int c = (int)ncb - 2; c >= 0; c--) {
 		uint64_t cbp = s + (uint64_t)npage * psize + (uint64_t)c * psize;
-		if (!(used[c / 64] & (1ull << (c % 64))) && !(rd32(cbp) & 1) && rd32(s + psize + 4 * c) == 0) {
-			cb = (int)c;
+		if (!(used[c / 64] & (1ull << (c % 64))) && !(rd32(cbp) & 1)) {
+			cb = c;
 			break;
 		}
 	}
-	if (slot < 0 || cb < 0 || (uint64_t)(npage + cb + 1) * psize > SMMU_SIZE) {
+	if (slot < 0 || cb < 0) {
 		printf("smmu: no free SMR/bank (SMR %d, bank %d)\n", slot, cb);
 		return -1;
 	}
 	uint64_t gr1 = s + psize, cbp = s + (uint64_t)npage * psize + (uint64_t)cb * psize;
-	wr32(cbp + 0x58, 0xffffffff);			/* FSR: clear */
-	wr32(cbp + 0x20, 0);				/* TTBR0 */
-	wr32(cbp + 0x24, 0);
-	wr32(cbp + 0x30, 0);				/* TCR */
-	wr32(cbp + 0x10, 0);				/* TCR2 */
-	wr32(cbp + 0x38, 0);				/* MAIR */
-	wr32(cbp + 0x3c, 0);
-	wr32(gr1 + 0x800 + 4 * cb, CB_CBA2R);
-	wr32(gr1 + 4 * cb, CB_CBAR);
-	wr32(cbp, CB_SCTLR);				/* SCTLR last */
-	wr32(s + 0xc00 + 4 * slot, (uint32_t)cb);	/* S2CR: translate (type 0) through this bank */
+	printf("smmu: WLAN %#x/%#x: using CB%d (SCTLR %08x CBAR %08x) and SMR%d\n", WLAN_SID, WLAN_SID_MASK, cb,
+	       rd32(cbp), rd32(gr1 + 4 * cb), slot);
+	wr32(cbp, 0);					/* SCTLR: translation off */
+	wr32(gr1 + 4 * cb, 1u << 16);			/* CBAR: S1 translate / S2 bypass */
+	wr32(s + 0xc00 + 4 * slot, (uint32_t)cb);	/* S2CR: TYPE 0, CBNDX (before the SMR, as Linux) */
 	wr32(s + 0x800 + 4 * slot, (1u << 31) | (WLAN_SID_MASK << 16) | WLAN_SID);	/* SMR valid last */
-	wr32(s + 0x70, 0);				/* sTLBGSYNC */
-	for (int i = 0; i < 1000 && (rd32(s + 0x74) & 1); i++)
-		delay_ms(1);
 	uint32_t smr = rd32(s + 0x800 + 4 * slot), s2cr = rd32(s + 0xc00 + 4 * slot);
 	smmu_done = (smr >> 31) && sid_match(smr, WLAN_SID, WLAN_SID_MASK) && ((s2cr >> 16) & 3) == 0 &&
 		    (s2cr & 0xff) == (uint32_t)cb;
-	printf("smmu: WLAN %#x/%#x -> CB%d via SMR%d: SMR %08x S2CR %08x SCTLR %08x CBAR %08x -> %s\n", WLAN_SID,
-	       WLAN_SID_MASK, cb, slot, smr, s2cr, rd32(cbp), rd32(gr1 + 4 * cb), smmu_done ? "ok" : "NOT as written");
+	printf("smmu: WLAN %#x/%#x -> CB%d via SMR%d: SMR %08x S2CR %08x SCTLR %08x CBAR %08x GFSR %08x -> %s\n",
+	       WLAN_SID, WLAN_SID_MASK, cb, slot, smr, s2cr, rd32(cbp), rd32(gr1 + 4 * cb), rd32(s + 0x48),
+	       smmu_done ? "ok" : "NOT as written");
 	return smmu_done ? 0 : -1;
 }
 

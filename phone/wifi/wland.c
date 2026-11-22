@@ -1133,6 +1133,9 @@ static int auto_up(void)
 
 int main(int argc, char **argv)
 {
+	/* fajita: line-buffered even into sweetcmd's pipe, so a crash cannot swallow the log */
+	setvbuf(stdout, NULL, _IOLBF, 0);
+	setvbuf(stderr, NULL, _IONBF, 0);
 	if (argc < 2) {
 		fprintf(stderr, "usage: wland smem | smp2p | vote RES LVL | levels RES | boot\n");
 		return 2;
