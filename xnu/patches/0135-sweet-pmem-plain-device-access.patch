@@ -1,0 +1,47 @@
+diff --git a/bsd/dev/sweet_pmem.c b/bsd/dev/sweet_pmem.c
+index 3fff19c..e22d5ec 100644
+--- a/bsd/dev/sweet_pmem.c
++++ b/bsd/dev/sweet_pmem.c
+@@ -119,6 +119,27 @@ pm_io(uint64_t pa)
+ 	return pm_map[i].va ? (volatile uint32_t *)(pm_map[i].va + (pa - win)) : NULL;
+ }
+ 
++/*
++ * One plain 32-bit load/store per register, never post-indexed or paired: on fajita (SDM845) the hypervisor
++ * traps EL1 accesses to the apps SMMU and emulates them from the abort syndrome, which is only valid for
++ * single loads/stores without writeback. The C copy loop compiled to `ldr w10, [x23], #4` on the device
++ * mapping; reading the SMMU through /dev/pmem then reset the SoC into crash-dump mode (2026-11-22, twice).
++ * Same as Linux readl/writel.
++ */
++static inline uint32_t
++pm_ld32(const volatile uint32_t *p)
++{
++	uint32_t v;
++	__asm__ volatile ("ldr %w0, [%1]" : "=r"(v) : "r"(p) : "memory");
++	return v;
++}
++
++static inline void
++pm_st32(volatile uint32_t *p, uint32_t v)
++{
++	__asm__ volatile ("str %w0, [%1]" : : "r"(v), "r"(p) : "memory");
++}
++
+ static int
+ pm_rw(struct uio *uio, bool write)
+ {
+@@ -148,12 +169,12 @@ pm_rw(struct uio *uio, bool write)
+ 			err = uiomove((caddr_t)pm_bounce, (int)n, uio);
+ 			__asm__ volatile ("dmb oshst" ::: "memory");
+ 			for (unsigned i = 0; !err && i < n / 4; i++) {
+-				r[i] = pm_bounce[i];
++				pm_st32(&r[i], pm_bounce[i]);
+ 			}
+ 			__asm__ volatile ("dsb osh" ::: "memory");
+ 		} else {
+ 			for (unsigned i = 0; i < n / 4; i++) {
+-				pm_bounce[i] = r[i];
++				pm_bounce[i] = pm_ld32(&r[i]);
+ 			}
+ 			__asm__ volatile ("dmb oshld" ::: "memory");
+ 			err = uiomove((caddr_t)pm_bounce, (int)n, uio);

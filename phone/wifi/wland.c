@@ -1194,6 +1194,8 @@ int main(int argc, char **argv)
 		/* everything from a fresh phone boot: SMP2P, the modem, GLINK + QRTR; the WLAN SMMU stream first */
 		return up(argc > 2 ? (unsigned)atoi(argv[2]) : 20);
 	} else if (!strcmp(c, "smmu")) {
+		extern int smmu_dry;
+		smmu_dry = argc > 2 && !strcmp(argv[2], "dry");
 		return smmu_wlan_identity() ? 1 : 0;
 	} else if (!strcmp(c, "cmddb")) {
 		cmddb_list();

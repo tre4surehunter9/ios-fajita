@@ -176,6 +176,18 @@ table at the top). State:
     works. **Fix (radio.c):** WLAN now does exactly that on the highest free bank below USB's; wland line-buffers
     stdout. SMMU on this boot: sCR0 0x2d0406 (USFCFG 1), 76 SMRs, 45 banks, 6 valid SMRs + USB's SMR6 -> CB44.
     Next try: `wland smmu` alone first, then `wland up`.
+  - **`wland smmu` (fixed routine) #2 (0134p): crash-dump again.** **RAM dump read (user's idea):** qdl v2.9.1 built in
+    work/tools/qdl by hand (meson tree; `gcc ... src/*.c` from src/meson.build, no libzip), `qdl ramdump --debug -o
+    work/dump-0134p-2 DDRCS0_1` (2 GiB at 0x100000000, ~100 s; qdl resets the phone after), then
+    `tools/sweet-ramlog.py xnu/out-0134/kernel.development.sweet shim/out-fajita/payload-0134p.bin
+    work/dump-0134p-2/DDRCS0_1.BIN 0x100000000 logs/ramlog-0134p-2.txt`: ring ends `exec wland` + a few unrelated
+    lines, **no panic** (external reset). The dump has wland's format strings but **no formatted `smmu: sCR0` line**
+    (line-buffered): it died in the first SMMU *reads*. **Cause (from the 0134 kernel's disassembly):** /dev/pmem's
+    device read loop compiled to `ldr w10, [x23], #4` (post-indexed) on the MMIO window; the SDM845 hypervisor traps
+    EL1 SMMU accesses and can only emulate loads/stores with a valid syndrome (no writeback). SMEM reads worked
+    because SMEM is not trapped; the kernel USB driver's single loads work. **Kernel patch 0135:** pm_ld32/pm_st32 =
+    one inline-asm `ldr/str w, [x]` per register (as readl/writel). radio.c additionally shares USB's bank (CB44)
+    and writes only one S2CR + one SMR; `wland smmu dry` prints without writing.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
