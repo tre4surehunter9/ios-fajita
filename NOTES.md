@@ -296,6 +296,13 @@ table at the top). State:
     while joined, wifid's scans are answered from the cached list unless the last background scan is >= 60 s old
     (was 15 s), and the clock restarts at every link up (no background scan in the first 60 s after a join).
     Unproven which of the two caused the kickout/assert; both are cheap.
+  - **2026-11-22: SETTINGS -> WI-FI SHOWS CONNECTED (user)** (0138w + wland phone-bin run 45048953736,
+    logs/wland-up-7.txt, usb-0138w-2.txt). From the boot: wifid starts (wlan ADT), configd's Wi-Fi service for en0
+    **persisted across the reboot** (no configd restart needed), wland joins TVIFiber_6259 (-53 dBm), configd's
+    DHCP 192.168.1.53 + default route, PC ping ok. The first background scan came at 85 s (60 s hold-off) and the
+    link survived it (17 networks for wifid); no kickout or modem assert by 111 s. Still open: the user has not
+    entered the password in Settings (Settings already showed "connected"); the 0136d daily image + wlandjob boot
+    job; whether the teardown fix holds on a real kickout; battery ~2 % at the end.
 - **Handoff 2026-11-01: GPU milestone done, paused (user).** CoreAnimation runs on the Adreno 630 through
   Metal (SweetMetal2.bundle = metal2vulkan + Turnip, kernel patches 0094-0123): GPU at 710 MHz, CPUs at their
   top level, GPU interrupt, GPU 2D blit scaled onto the panel + VIG0 flips, non-blocking present, iOS 16
