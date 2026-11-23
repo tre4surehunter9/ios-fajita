@@ -2,7 +2,7 @@
 
 > [!WARNING]
 > **Abandoned.** I've decided to put this project down for now if you want a better working iOS visit https://github.com/kiwiiiii-eth/hakios-fajita
-
+(not endorsed)
 > [!WARNING]
 > **Vibecoded.** All of this port's code, patches, tools and documentation (this README included) were written by an AI. They were then tested on one phone. Nothing here has been reviewed by a human expert. It may be wrong, may break, and may damage your device or erase your data. Use it entirely at your own risk. I am under no obligation to fix bugs, answer issues, or support anyone using it.
 
